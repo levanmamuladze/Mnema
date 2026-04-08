@@ -1,0 +1,46 @@
+# Environment — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads & generated files
+uploads/
+.chroma_db/
+
+# Model cache — large binary files, re-downloaded at runtime
+hf_cache/
+*.bin
+*.safetensors
+
+# Test scripts with hardcoded credentials
+test.py
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/

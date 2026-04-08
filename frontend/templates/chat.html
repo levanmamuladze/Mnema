@@ -1,0 +1,437 @@
+{% extends "base.html" %}
+{% block title %}Chat — Onboarding AI{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="chat-layout" style="flex:1;overflow:hidden;">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────── -->
+  <aside class="sidebar" role="complementary" aria-label="Conversations">
+    <div class="sidebar-header">
+      <span class="sidebar-title">Chats</span>
+      <button class="btn btn-primary btn-sm" onclick="newConversation()" title="New chat" aria-label="Start new conversation">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        New
+      </button>
+    </div>
+
+    <div class="sidebar-body" id="conversation-list" role="list">
+      <div class="skeleton-list" aria-label="Loading conversations">
+        <div class="skeleton-item"></div><div class="skeleton-item"></div><div class="skeleton-item"></div>
+      </div>
+    </div>
+
+    <div class="progress-section" id="progress-section" style="display:none" aria-label="Learning progress">
+      <div class="progress-label">
+        <span>Learning progress</span>
+        <span id="progress-overall" aria-live="polite">0%</span>
+      </div>
+      <div class="progress-bar-track" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+        <div class="progress-bar-fill" id="progress-bar" style="width:0%"></div>
+      </div>
+      <div class="progress-topics" id="progress-topics"></div>
+    </div>
+
+    <div class="sidebar-footer">
+      <button class="btn btn-ghost btn-full" onclick="showProgress()" style="font-size:.8rem;justify-content:flex-start;gap:.5rem" aria-label="Show learning progress">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+        Learning Progress
+      </button>
+    </div>
+  </aside>
+
+  <!-- ── Main ─────────────────────────────────────────────────── -->
+  <div class="chat-main" role="main">
+    <div class="chat-header" id="chat-header" style="display:none" aria-live="polite">
+      <div style="flex:1;overflow:hidden">
+        <div class="chat-header-title" id="chat-title">New Conversation</div>
+        <div class="chat-header-sub" id="chat-subtitle"></div>
+      </div>
+    </div>
+
+    <div class="chat-messages" id="chat-messages" role="log" aria-live="polite" aria-label="Conversation messages">
+      <div class="chat-empty">
+        <div class="chat-empty-icon" aria-hidden="true">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <h3>Ask your onboarding assistant</h3>
+        <p>Select a conversation from the sidebar or start a new one. I'll answer questions based on your company's documentation.</p>
+        <button class="btn btn-primary" onclick="newConversation()" style="margin-top:1rem">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Start conversation
+        </button>
+      </div>
+    </div>
+
+    <div class="chat-input-wrapper">
+      <div class="chat-input-box">
+        <textarea
+          id="message-input"
+          class="chat-textarea"
+          placeholder="Ask anything about your onboarding…"
+          rows="1"
+          onkeydown="handleKey(event)"
+          oninput="autoResize(this)"
+          aria-label="Message input"
+          aria-multiline="true"
+        ></textarea>
+        <button class="chat-send-btn" id="btn-send" onclick="sendMessage()" aria-label="Send message">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          </svg>
+        </button>
+      </div>
+      <div class="chat-input-hint" aria-hidden="true">Enter to send · Shift+Enter for new line</div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+let currentConvId = null;
+const user = (() => { try { return JSON.parse(sessionStorage.getItem('user') || '{}'); } catch(_){ return {}; } })();
+
+marked.setOptions({ breaks: true, gfm: true });
+
+// ── Guard: redirect to login if no session ───────────────────────────────────
+(async function() {
+  const res = await fetch('/auth/me', { credentials: 'include' });
+  if (!res.ok) { window.location.href = '/'; }
+})();
+
+// ── API helper — cookies sent automatically, no token in JS ──────────────────
+async function api(url, opts = {}) {
+  const isForm = opts.body instanceof FormData;
+  const res = await fetch(url, {
+    ...opts,
+    credentials: 'include',
+    headers: {
+      ...(isForm ? {} : { 'Content-Type': 'application/json' }),
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401) { window.location.href = '/'; return null; }
+  return res;
+}
+
+// ── Sidebar ──────────────────────────────────────────────────────────────────
+async function loadConversations() {
+  const res = await api('/chat/conversations');
+  if (!res) return;
+  const convs = await res.json();
+  const list = document.getElementById('conversation-list');
+  if (!convs.length) {
+    list.innerHTML = '<p class="empty-list" style="padding:.75rem">No conversations yet — start one below.</p>';
+    return;
+  }
+  list.innerHTML = '';
+  convs.forEach(c => list.appendChild(buildConvItem(c)));
+}
+
+function buildConvItem(c) {
+  const el = document.createElement('div');
+  el.className = 'conv-item' + (c.id === currentConvId ? ' active' : '');
+  el.dataset.id = c.id;
+  el.setAttribute('role', 'listitem');
+  el.setAttribute('tabindex', '0');
+  el.innerHTML = `
+    <span class="conv-item-title">${esc(c.title || 'New conversation')}</span>
+    <span class="conv-item-actions">
+      <button title="Rename" aria-label="Rename conversation" onclick="startRename(event,${c.id},'${esc(c.title||'')}')">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      </button>
+      <button class="danger" title="Delete" aria-label="Delete conversation" onclick="deleteConv(event,${c.id})">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+      </button>
+    </span>`;
+  el.addEventListener('click', () => openConversation(c.id));
+  el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') openConversation(c.id); });
+  return el;
+}
+
+function setActiveConv(id) {
+  document.querySelectorAll('.conv-item').forEach(el => {
+    el.classList.toggle('active', parseInt(el.dataset.id) === id);
+  });
+}
+
+// ── Rename ───────────────────────────────────────────────────────────────────
+function startRename(e, id, currentTitle) {
+  e.stopPropagation();
+  const item = document.querySelector(`.conv-item[data-id="${id}"]`);
+  if (!item) return;
+  const titleEl = item.querySelector('.conv-item-title');
+  const input = document.createElement('input');
+  input.className = 'conv-rename-input';
+  input.value = currentTitle;
+  titleEl.replaceWith(input);
+  input.focus(); input.select();
+  const finish = async () => {
+    const newTitle = input.value.trim();
+    if (newTitle && newTitle !== currentTitle) {
+      const res = await api(`/chat/conversations/${id}`, { method: 'PATCH', body: JSON.stringify({ title: newTitle }) });
+      if (res?.ok && id === currentConvId) document.getElementById('chat-title').textContent = newTitle;
+    }
+    await loadConversations();
+  };
+  input.addEventListener('blur', finish);
+  input.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter') input.blur();
+    if (ev.key === 'Escape') loadConversations();
+  });
+}
+
+// ── Delete ───────────────────────────────────────────────────────────────────
+async function deleteConv(e, id) {
+  e.stopPropagation();
+  if (!confirm('Delete this conversation? This cannot be undone.')) return;
+  await api(`/chat/conversations/${id}`, { method: 'DELETE' });
+  if (id === currentConvId) { currentConvId = null; clearChat(); }
+  await loadConversations();
+}
+
+// ── Open / New ───────────────────────────────────────────────────────────────
+async function newConversation() {
+  const res = await api('/chat/conversations', { method: 'POST', body: JSON.stringify({ title: null }) });
+  if (!res?.ok) return;
+  const conv = await res.json();
+  currentConvId = conv.id;
+  await loadConversations();
+  clearChat();
+  document.getElementById('chat-header').style.display = 'flex';
+  document.getElementById('chat-title').textContent = 'New conversation';
+  document.getElementById('message-input').focus();
+}
+
+async function openConversation(id) {
+  currentConvId = id;
+  setActiveConv(id);
+  const res = await api(`/chat/conversations/${id}`);
+  if (!res?.ok) return;
+  const conv = await res.json();
+  clearChat();
+  document.getElementById('chat-header').style.display = 'flex';
+  document.getElementById('chat-title').textContent = conv.title || 'New conversation';
+  if (conv.messages?.length) conv.messages.forEach(m => appendMessage(m.role, m.content, m.created_at));
+  scrollToBottom();
+  document.getElementById('message-input').focus();
+}
+
+function clearChat() {
+  document.getElementById('chat-messages').innerHTML = `
+    <div class="chat-empty">
+      <div class="chat-empty-icon" aria-hidden="true">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      </div>
+      <h3>Start asking questions</h3>
+      <p>Type a message below to get answers from your company's documentation.</p>
+    </div>`;
+}
+
+// ── Messages ─────────────────────────────────────────────────────────────────
+function appendMessage(role, content, ts = null) {
+  const container = document.getElementById('chat-messages');
+  const empty = container.querySelector('.chat-empty');
+  if (empty) empty.remove();
+
+  const initials = role === 'user' ? (user.username || 'U').slice(0, 1).toUpperCase() : 'AI';
+  const timeStr  = ts ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+
+  const row = document.createElement('div');
+  row.className = `message-row ${role}`;
+  row.setAttribute('role', 'article');
+  row.setAttribute('aria-label', `${role === 'user' ? 'You' : 'Assistant'} said`);
+
+  const contentDiv = document.createElement('div');
+  contentDiv.className = 'message-content';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'message-bubble';
+
+  if (role === 'assistant') {
+    // SECURITY: always sanitise before injecting HTML — prevents XSS from LLM output
+    bubble.innerHTML = DOMPurify.sanitize(marked.parse(content));
+  } else {
+    bubble.textContent = content;
+  }
+
+  const timeEl = document.createElement('div');
+  timeEl.className = 'message-time';
+  timeEl.setAttribute('aria-label', timeStr);
+  timeEl.textContent = timeStr;
+
+  contentDiv.appendChild(bubble);
+  contentDiv.appendChild(timeEl);
+
+  const avatar = document.createElement('div');
+  avatar.className = `message-avatar ${role === 'user' ? 'user-av' : 'ai-av'}`;
+  avatar.textContent = initials;
+  avatar.setAttribute('aria-hidden', 'true');
+
+  if (role === 'user') { row.appendChild(contentDiv); row.appendChild(avatar); }
+  else                 { row.appendChild(avatar);      row.appendChild(contentDiv); }
+
+  container.appendChild(row);
+  scrollToBottom();
+  return bubble;
+}
+
+function appendTyping() {
+  const container = document.getElementById('chat-messages');
+  const empty = container.querySelector('.chat-empty');
+  if (empty) empty.remove();
+
+  const row = document.createElement('div');
+  row.className = 'message-row assistant';
+  row.id = 'typing-row';
+  row.setAttribute('aria-label', 'Assistant is typing');
+
+  const avatar = document.createElement('div');
+  avatar.className = 'message-avatar ai-av';
+  avatar.textContent = 'AI';
+  avatar.setAttribute('aria-hidden', 'true');
+
+  const contentDiv = document.createElement('div');
+  contentDiv.className = 'message-content';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'message-bubble';
+  bubble.id = 'streaming-bubble';
+  bubble.innerHTML = '<div class="typing-indicator" aria-hidden="true"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>';
+
+  contentDiv.appendChild(bubble);
+  row.appendChild(avatar);
+  row.appendChild(contentDiv);
+  container.appendChild(row);
+  scrollToBottom();
+  return bubble;
+}
+
+function scrollToBottom() {
+  const c = document.getElementById('chat-messages');
+  c.scrollTop = c.scrollHeight;
+}
+
+// ── Send ─────────────────────────────────────────────────────────────────────
+async function sendMessage() {
+  if (!currentConvId) await newConversation();
+  const input = document.getElementById('message-input');
+  const content = input.value.trim();
+  if (!content) return;
+
+  input.value = '';
+  autoResize(input);
+  const btn = document.getElementById('btn-send');
+  btn.disabled = true;
+
+  appendMessage('user', content);
+  const bubble = appendTyping();
+
+  let fullText = '';
+  try {
+    const res = await fetch(`/chat/conversations/${currentConvId}/messages`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+
+    if (!res.ok) {
+      bubble.innerHTML = DOMPurify.sanitize('<em>Error sending message. Please try again.</em>');
+      btn.disabled = false;
+      return;
+    }
+
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.token) {
+            fullText += data.token;
+            // SECURITY: sanitise every incremental update
+            bubble.innerHTML = DOMPurify.sanitize(marked.parse(fullText));
+            scrollToBottom();
+          }
+          if (data.title_update) {
+            document.getElementById('chat-title').textContent = data.title_update;
+            await loadConversations();
+          }
+          if (data.error) {
+            bubble.innerHTML = DOMPurify.sanitize(`<em style="color:var(--text-muted)">${esc(data.error)}</em>`);
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (_) {
+    bubble.innerHTML = '<em style="color:var(--text-muted)">Could not reach server. Check your connection and try again.</em>';
+  }
+
+  document.getElementById('typing-row')?.remove();
+  if (fullText) appendMessage('assistant', fullText);
+
+  btn.disabled = false;
+  document.getElementById('message-input').focus();
+  loadProgress();
+}
+
+// ── Progress ─────────────────────────────────────────────────────────────────
+async function loadProgress() {
+  const res = await api('/chat/progress');
+  if (!res?.ok) return;
+  const data = await res.json();
+  if (!data.items?.length) return;
+
+  document.getElementById('progress-section').style.display = 'block';
+  const overall = Math.round(data.overall);
+  document.getElementById('progress-overall').textContent = overall + '%';
+  const bar = document.getElementById('progress-bar');
+  bar.style.width = overall + '%';
+  bar.closest('[role="progressbar"]')?.setAttribute('aria-valuenow', overall);
+
+  document.getElementById('progress-topics').innerHTML = data.items.slice(0, 5).map(item => `
+    <div class="progress-topic-row">
+      <span class="progress-topic-name" title="${esc(item.topic)}">${esc(item.topic)}</span>
+      <div class="progress-topic-bar"><div class="progress-topic-bar-fill" style="width:${item.progress}%"></div></div>
+      <span class="progress-topic-val">${Math.round(item.progress)}%</span>
+    </div>`).join('');
+}
+
+async function showProgress() {
+  await loadProgress();
+  document.getElementById('progress-section').scrollIntoView({ behavior: 'smooth' });
+}
+
+// ── Input helpers ─────────────────────────────────────────────────────────────
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+}
+
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadConversations();
+loadProgress();
+</script>
+{% endblock %}

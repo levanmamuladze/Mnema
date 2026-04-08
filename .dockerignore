@@ -1,0 +1,16 @@
+# Never copy these into the image
+.env
+*.db
+*.sqlite
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.git/
+.gitignore
+uploads/
+.chroma_db/
+*.log
+logs/
+node_modules/

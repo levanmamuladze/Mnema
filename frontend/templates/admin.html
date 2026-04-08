@@ -1,0 +1,930 @@
+{% extends "base.html" %}
+{% block title %}Admin — Onboarding AI{% endblock %}
+
+{% block extra_styles %}
+<style>
+/* ── Folder tab pills ──────────────────────────────────────────────────────── */
+.folder-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: .4rem .9rem;
+  cursor: pointer;
+  font-size: .875rem;
+  color: var(--text-muted);
+  margin-bottom: -1px;
+  transition: color .15s, border-color .15s;
+}
+.folder-tab:hover { color: var(--text); }
+.folder-tab-active {
+  color: var(--primary, #4f6ef7);
+  border-bottom-color: var(--primary, #4f6ef7);
+  font-weight: 600;
+}
+
+/* ── Drag-drop zone ────────────────────────────────────────────────────────── */
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+  padding: 2rem 1.5rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
+  color: var(--text-muted);
+  font-size: .875rem;
+  user-select: none;
+}
+.drop-zone:hover,
+.drop-zone.drag-over {
+  border-color: var(--primary, #4f6ef7);
+  background: rgba(79,110,247,.04);
+  color: var(--text);
+}
+.drop-zone input[type="file"] {
+  display: none;
+}
+.drop-zone-icon { margin-bottom: .6rem; color: var(--text-muted); }
+.drop-zone.drag-over .drop-zone-icon { color: var(--primary, #4f6ef7); }
+.drop-zone-label { font-weight: 500; }
+.drop-zone-hint  { font-size: .75rem; margin-top: .25rem; }
+
+/* ── Empty states ──────────────────────────────────────────────────────────── */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 1.5rem;
+  color: var(--text-muted);
+  text-align: center;
+  gap: .75rem;
+}
+.empty-state-icon { color: var(--border); }
+.empty-state h3   { margin: 0; font-size: 1rem; color: var(--text); }
+.empty-state p    { margin: 0; font-size: .875rem; }
+
+/* ── Progress bar ──────────────────────────────────────────────────────────── */
+.progress-track {
+  background: var(--border);
+  border-radius: 4px;
+  height: 6px;
+  overflow: hidden;
+}
+.progress-fill {
+  background: var(--primary, #4f6ef7);
+  height: 100%;
+  width: 0%;
+  transition: width .3s ease;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="admin-layout">
+  <aside class="sidebar">
+    <div class="sidebar-header"><span class="sidebar-title">Admin</span></div>
+    <nav class="admin-nav">
+      <a class="admin-nav-link active" onclick="showTab('documents',this)" role="tab" aria-selected="true">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        Documents
+      </a>
+      <a class="admin-nav-link" onclick="showTab('users',this)" role="tab" aria-selected="false">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        Users
+      </a>
+    </nav>
+  </aside>
+
+  <div class="admin-main">
+
+    <!-- Documents tab -->
+    <div id="tab-documents" class="admin-tab">
+      <div class="admin-section-header">
+        <h2>Documents</h2>
+        <div style="display:flex;gap:.5rem">
+          <button class="btn btn-primary" onclick="openModal('upload-modal')" aria-label="Upload a document">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Upload
+          </button>
+          <button class="btn btn-primary" onclick="openModal('folder-upload-modal')" aria-label="Upload an entire folder">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            Folder
+          </button>
+        </div>
+      </div>
+      <div id="upload-status" class="alert" style="display:none" role="status" aria-live="polite"></div>
+      <div id="documents-list" class="data-table-wrapper" aria-live="polite"><p class="loading-text">Loading…</p></div>
+    </div>
+
+    <!-- Users tab -->
+    <div id="tab-users" class="admin-tab" style="display:none">
+      <div class="admin-section-header">
+        <h2>Users</h2>
+        <button class="btn btn-primary" onclick="openModal('create-user-modal')" aria-label="Create a new user">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Create user
+        </button>
+      </div>
+      <div id="users-list" class="data-table-wrapper" aria-live="polite"><p class="loading-text">Loading…</p></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Upload document modal ─────────────────────────────────────────────── -->
+<div class="modal-overlay" id="upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-modal-title">
+  <div class="modal-card">
+    <h3 id="upload-modal-title">Upload Document</h3>
+    <div id="upload-error" class="alert alert-error" style="display:none" role="alert"></div>
+
+    <!-- Drag-drop zone -->
+    <div class="drop-zone" id="single-drop-zone"
+         role="button" tabindex="0" aria-label="Drop a file here or click to browse"
+         onclick="document.getElementById('upload-file').click()"
+         onkeydown="if(event.key==='Enter'||event.key===' ')document.getElementById('upload-file').click()"
+         ondragover="handleDragOver(event,'single-drop-zone')"
+         ondragleave="handleDragLeave('single-drop-zone')"
+         ondrop="handleDrop(event,'upload-file','single-drop-zone')">
+      <input type="file" id="upload-file" accept=".pdf,.txt,.docx"
+             onchange="updateDropZoneLabel('single-drop-zone', this.files)"/>
+      <div class="drop-zone-icon">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      </div>
+      <p class="drop-zone-label" id="single-drop-label">Drop file here or <strong>browse</strong></p>
+      <p class="drop-zone-hint">PDF, TXT, DOCX</p>
+    </div>
+
+    <div class="form-group" style="margin-top:1rem">
+      <label>Access roles</label>
+      <div style="display:flex;gap:1.5rem;margin-top:.35rem">
+        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;font-size:.875rem">
+          <input type="checkbox" id="role-hr" value="hr"/> HR
+        </label>
+        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;font-size:.875rem">
+          <input type="checkbox" id="role-developer" value="developer"/> Developer
+        </label>
+      </div>
+    </div>
+    <div style="display:flex;gap:.75rem;margin-top:.25rem">
+      <button class="btn btn-primary" id="btn-upload" onclick="uploadDocument()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        Upload &amp; Index
+      </button>
+      <button class="btn btn-ghost" onclick="closeModal('upload-modal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Folder upload modal ────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="folder-upload-modal" role="dialog" aria-modal="true" aria-labelledby="folder-modal-title">
+  <div class="modal-card" style="min-width:420px;max-width:560px">
+    <h3 id="folder-modal-title">Upload Folder</h3>
+    <div id="folder-upload-error" class="alert alert-error" style="display:none" role="alert"></div>
+
+    <!-- Mode tabs -->
+    <div style="display:flex;border-bottom:1px solid var(--border);margin-bottom:1rem" role="tablist">
+      <button id="tab-browser-btn" class="folder-tab folder-tab-active" role="tab" aria-selected="true"
+              onclick="switchFolderTab('browser')">Browse (local)</button>
+      <button id="tab-path-btn" class="folder-tab" role="tab" aria-selected="false"
+              onclick="switchFolderTab('path')">Server path</button>
+    </div>
+
+    <!-- Shared: roles -->
+    <div class="form-group">
+      <label>Access roles</label>
+      <div style="display:flex;gap:1.5rem;margin-top:.35rem">
+        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;font-size:.875rem">
+          <input type="checkbox" id="folder-role-hr" value="hr"/> HR
+        </label>
+        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;font-size:.875rem">
+          <input type="checkbox" id="folder-role-developer" value="developer"/> Developer
+        </label>
+      </div>
+    </div>
+
+    <!-- Mode A: browser folder picker -->
+    <div id="tab-browser-panel" role="tabpanel">
+      <!-- Drag-drop zone for folder -->
+      <div class="drop-zone" id="folder-drop-zone"
+           role="button" tabindex="0" aria-label="Select a folder"
+           onclick="document.getElementById('folder-browser-input').click()"
+           onkeydown="if(event.key==='Enter'||event.key===' ')document.getElementById('folder-browser-input').click()">
+        <input type="file" id="folder-browser-input" webkitdirectory multiple
+               onchange="updateDropZoneLabel('folder-drop-zone', this.files, true)"/>
+        <div class="drop-zone-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <p class="drop-zone-label" id="folder-drop-label">Click to <strong>select a folder</strong></p>
+        <p class="drop-zone-hint">All supported files inside will be uploaded</p>
+      </div>
+    </div>
+
+    <!-- Mode B: server-side path -->
+    <div id="tab-path-panel" style="display:none" role="tabpanel">
+      <div class="form-group">
+        <label for="folder-path-input">Folder path</label>
+        <input type="text" id="folder-path-input" class="form-input"
+               placeholder="/data/docs  or  \\server\share\folder  or  OneDrive URL"
+               oninput="onFolderPathInput(this.value)"/>
+        <p id="folder-path-hint" style="font-size:.78rem;color:var(--text-muted);margin-top:.35rem">
+          Absolute local path, UNC/SMB network share, or OneDrive browser URL.
+        </p>
+      </div>
+
+      <!-- SMB credentials -->
+      <div id="smb-creds" class="form-row">
+        <div class="form-group">
+          <label>Username <span style="color:var(--text-muted);font-weight:400">(optional)</span></label>
+          <input type="text" id="folder-username" class="form-input" placeholder="domain\user" autocomplete="username"/>
+        </div>
+        <div class="form-group">
+          <label>Password <span style="color:var(--text-muted);font-weight:400">(optional)</span></label>
+          <input type="password" id="folder-password" class="form-input" autocomplete="current-password"/>
+        </div>
+      </div>
+
+      <!-- OneDrive token (shown only when OneDrive URL detected) -->
+      <div id="onedrive-creds" style="display:none">
+        <div class="form-group">
+          <label>Microsoft Graph access token <span style="color:var(--danger,#ef4444);font-weight:400">*required</span></label>
+          <input type="password" id="folder-onedrive-token" class="form-input" placeholder="eyJ0eXAiOiJKV1Qi…"/>
+          <p style="font-size:.78rem;color:var(--text-muted);margin-top:.35rem;line-height:1.5">
+            How to get a token:<br>
+            1. Open <a href="https://developer.microsoft.com/en-us/graph/graph-explorer" target="_blank" rel="noopener"
+               style="color:var(--primary,#4f6ef7)">Graph Explorer</a> and sign in with your Microsoft account.<br>
+            2. Click <strong>Modify permissions</strong> &rarr; find <code>Files.Read</code> &rarr; click <strong>Consent</strong>.<br>
+            3. Copy the token from the <strong>Access token</strong> tab and paste it here.
+          </p>
+        </div>
+        <div class="form-group">
+          <label>Folder path inside OneDrive <span style="color:var(--text-muted);font-weight:400">(optional override)</span></label>
+          <input type="text" id="folder-onedrive-path" class="form-input" placeholder="inventyou"/>
+          <p style="font-size:.78rem;color:var(--text-muted);margin-top:.35rem">
+            If the URL doesn't resolve automatically, type the folder name here (e.g. <code>inventyou</code>).
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Progress panel -->
+    <div id="folder-progress-panel" style="display:none;margin-top:.75rem" role="region" aria-label="Upload progress">
+      <div style="display:flex;justify-content:space-between;font-size:.8rem;color:var(--text-muted);margin-bottom:.3rem">
+        <span id="fp-label">Scanning folder…</span>
+        <span id="fp-pct" aria-live="polite">0%</span>
+      </div>
+      <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="fp-progressbar">
+        <div class="progress-fill" id="fp-bar"></div>
+      </div>
+      <div style="display:flex;gap:1.5rem;margin-top:.6rem;font-size:.82rem">
+        <span>Total: <strong id="fp-total">—</strong></span>
+        <span style="color:var(--success,#22c55e)">Done: <strong id="fp-ok">0</strong></span>
+        <span style="color:var(--danger,#ef4444)">Failed: <strong id="fp-fail">0</strong></span>
+      </div>
+      <div id="fp-failed-list" style="display:none;margin-top:.6rem;max-height:120px;overflow-y:auto;
+           background:var(--surface-alt,#f8f8f8);border-radius:4px;padding:.5rem .75rem;font-size:.78rem">
+        <p style="font-weight:600;margin-bottom:.3rem;color:var(--danger,#ef4444)">Could not process:</p>
+        <ul id="fp-failed-items" style="margin:0;padding-left:1.2rem;color:var(--text-muted)"></ul>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:.75rem;margin-top:1rem">
+      <button class="btn btn-primary" id="btn-folder-upload" onclick="startFolderUpload()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        Upload &amp; Index All
+      </button>
+      <button class="btn btn-ghost" id="btn-folder-cancel" onclick="closeFolderModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Edit roles modal ───────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="roles-modal" role="dialog" aria-modal="true" aria-labelledby="roles-modal-title">
+  <div class="modal-card">
+    <h3 id="roles-modal-title">Edit Access Roles</h3>
+    <p id="roles-modal-name" style="color:var(--text-muted);font-size:.875rem;margin-bottom:1rem"></p>
+    <div id="roles-error" class="alert alert-error" style="display:none" role="alert"></div>
+    <div class="form-group">
+      <label>Allowed roles</label>
+      <div style="display:flex;gap:1.5rem;margin-top:.35rem">
+        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;font-size:.875rem">
+          <input type="checkbox" id="edit-role-hr" value="hr"/> HR
+        </label>
+        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;font-size:.875rem">
+          <input type="checkbox" id="edit-role-developer" value="developer"/> Developer
+        </label>
+      </div>
+    </div>
+    <div style="display:flex;gap:.75rem;margin-top:.25rem">
+      <button class="btn btn-primary" onclick="saveRoles()">Save</button>
+      <button class="btn btn-ghost" onclick="closeModal('roles-modal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Create user modal ──────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="create-user-modal" role="dialog" aria-modal="true" aria-labelledby="create-user-modal-title">
+  <div class="modal-card">
+    <h3 id="create-user-modal-title">Create User</h3>
+    <div id="create-user-error" class="alert alert-error" style="display:none" role="alert"></div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="new-username">Username</label>
+        <input type="text" id="new-username" class="form-input" placeholder="john_doe" autocomplete="off"/>
+      </div>
+      <div class="form-group">
+        <label for="new-email">Email</label>
+        <input type="email" id="new-email" class="form-input" placeholder="john@company.com" autocomplete="off"/>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="new-password">Password</label>
+        <input type="password" id="new-password" class="form-input" placeholder="Min 8 chars" autocomplete="new-password"/>
+      </div>
+      <div class="form-group">
+        <label for="new-role">Role</label>
+        <select id="new-role" class="form-input">
+          <option value="developer">Developer</option>
+          <option value="hr">HR</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group" style="flex-direction:row;align-items:center;gap:.5rem;margin-bottom:.5rem">
+      <input type="checkbox" id="new-is-admin"/>
+      <label for="new-is-admin" style="margin:0;cursor:pointer;font-size:.875rem;text-transform:none;letter-spacing:0">Make admin</label>
+    </div>
+    <div style="display:flex;gap:.75rem">
+      <button class="btn btn-primary" onclick="createUser()">Create</button>
+      <button class="btn btn-ghost" onclick="closeModal('create-user-modal')">Cancel</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ── Session guard ───────────────────────────────────────────────────────── */
+(async function () {
+  try {
+    const res = await fetch('/auth/me', { credentials: 'include' });
+    if (!res.ok) { window.location.href = '/'; return; }
+    const me = await res.json();
+    if (!me.is_admin) { window.location.href = '/chat-ui'; return; }
+  } catch (_) {
+    window.location.href = '/';
+  }
+})();
+
+let editingDocId = null;
+
+/* ── API helper — cookies only, no token juggling ────────────────────────── */
+async function api(url, opts = {}) {
+  const isForm = opts.body instanceof FormData;
+  const res = await fetch(url, {
+    ...opts,
+    credentials: 'include',
+    headers: {
+      ...(isForm ? {} : { 'Content-Type': 'application/json' }),
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401 || res.status === 403) {
+    window.location.href = '/';
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
+/* ── Modal helpers ───────────────────────────────────────────────────────── */
+function openModal(id) {
+  const modal = document.getElementById(id);
+  modal.classList.add('open');
+  // Focus first interactive element inside
+  const focusable = modal.querySelector('button,input,select,textarea,[tabindex]:not([tabindex="-1"])');
+  if (focusable) focusable.focus();
+}
+
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+}
+
+// Close on backdrop click
+document.querySelectorAll('.modal-overlay').forEach(m => {
+  m.addEventListener('click', e => { if (e.target === m) m.classList.remove('open'); });
+});
+
+// Close on Escape key
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  const open = document.querySelector('.modal-overlay.open');
+  if (open) open.classList.remove('open');
+});
+
+/* ── Tab navigation ──────────────────────────────────────────────────────── */
+function showTab(name, el) {
+  document.querySelectorAll('.admin-tab').forEach(t => t.style.display = 'none');
+  document.querySelectorAll('.admin-nav-link').forEach(l => {
+    l.classList.remove('active');
+    l.setAttribute('aria-selected', 'false');
+  });
+  document.getElementById(`tab-${name}`).style.display = 'block';
+  el.classList.add('active');
+  el.setAttribute('aria-selected', 'true');
+  if (name === 'documents') loadDocuments();
+  if (name === 'users')     loadUsers();
+}
+
+/* ── Drag-drop helpers ───────────────────────────────────────────────────── */
+function handleDragOver(e, zoneId) {
+  e.preventDefault();
+  document.getElementById(zoneId).classList.add('drag-over');
+}
+function handleDragLeave(zoneId) {
+  document.getElementById(zoneId).classList.remove('drag-over');
+}
+function handleDrop(e, inputId, zoneId) {
+  e.preventDefault();
+  document.getElementById(zoneId).classList.remove('drag-over');
+  const input = document.getElementById(inputId);
+  if (e.dataTransfer.files.length) {
+    // DataTransfer → FileList assignment not directly possible; use a shim
+    Object.defineProperty(input, 'files', { value: e.dataTransfer.files, configurable: true });
+    updateDropZoneLabel(zoneId, e.dataTransfer.files);
+  }
+}
+
+function updateDropZoneLabel(zoneId, files, isFolder) {
+  const labelId = zoneId === 'single-drop-zone' ? 'single-drop-label' : 'folder-drop-label';
+  const el = document.getElementById(labelId);
+  if (!el || !files || !files.length) return;
+  if (isFolder) {
+    el.innerHTML = `<strong>${files.length}</strong> file${files.length !== 1 ? 's' : ''} selected`;
+  } else {
+    el.innerHTML = `<strong>${esc(files[0].name)}</strong>`;
+  }
+}
+
+/* ── Documents ───────────────────────────────────────────────────────────── */
+async function loadDocuments() {
+  const el = document.getElementById('documents-list');
+  el.innerHTML = '<p class="loading-text">Loading…</p>';
+  try {
+    const res  = await api('/admin/documents');
+    const docs = await res.json();
+    if (!docs.length) {
+      el.innerHTML = `
+        <div class="empty-state">
+          <svg class="empty-state-icon" width="40" height="40" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
+          <h3>No documents yet</h3>
+          <p>Upload a file or folder to get started.</p>
+          <button class="btn btn-primary btn-sm" onclick="openModal('upload-modal')">Upload document</button>
+        </div>`;
+      return;
+    }
+    el.innerHTML = `<table class="data-table"><thead><tr>
+      <th>File</th><th>Size</th><th>Roles</th><th>Indexed</th><th>Uploaded</th><th></th>
+    </tr></thead><tbody>${docs.map(d => `
+      <tr>
+        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="${esc(d.original_filename)}">${esc(d.original_filename)}</td>
+        <td>${fmtSize(d.file_size)}</td>
+        <td>${roleBadges(d.allowed_roles)}</td>
+        <td>${d.is_indexed
+          ? '<span class="badge badge-success">Yes</span>'
+          : '<span class="badge badge-warning">No</span>'}</td>
+        <td style="color:var(--text-muted)">${new Date(d.uploaded_at).toLocaleDateString()}</td>
+        <td style="display:flex;gap:.4rem">
+          <button class="btn btn-ghost btn-sm"
+                  onclick="openRoles(${d.id},'${esc(d.original_filename)}',${JSON.stringify(d.allowed_roles)})"
+                  aria-label="Edit roles for ${esc(d.original_filename)}">Roles</button>
+          <button class="btn btn-danger btn-sm"
+                  onclick="deleteDoc(${d.id},'${esc(d.original_filename)}')"
+                  aria-label="Delete ${esc(d.original_filename)}">Delete</button>
+        </td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (err) {
+    el.innerHTML = `<p class="empty-list" style="color:var(--danger,#ef4444)">Failed to load documents.</p>`;
+  }
+}
+
+function roleBadges(roles) {
+  if (!roles?.length) return '<span class="badge badge-default">none</span>';
+  return roles.map(r =>
+    `<span class="badge ${r === 'hr' ? 'badge-primary' : 'badge-success'}" style="margin-right:3px">${r}</span>`
+  ).join('');
+}
+
+async function uploadDocument() {
+  const errEl = document.getElementById('upload-error');
+  errEl.style.display = 'none';
+  const file = document.getElementById('upload-file').files[0];
+  if (!file) { errEl.textContent = 'Please select a file.'; errEl.style.display = 'block'; return; }
+  const roles = [];
+  if (document.getElementById('role-hr').checked) roles.push('hr');
+  if (document.getElementById('role-developer').checked) roles.push('developer');
+  if (!roles.length) { errEl.textContent = 'Select at least one role.'; errEl.style.display = 'block'; return; }
+
+  const btn = document.getElementById('btn-upload');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span> Uploading…';
+
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('roles', roles.join(','));
+
+  try {
+    const res  = await api('/admin/documents/upload', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Upload failed');
+
+    closeModal('upload-modal');
+    document.getElementById('upload-file').value = '';
+    document.getElementById('single-drop-label').innerHTML = 'Drop file here or <strong>browse</strong>';
+    document.getElementById('role-hr').checked = false;
+    document.getElementById('role-developer').checked = false;
+    await loadDocuments();
+
+    showStatus('success', `"${esc(file.name)}" uploaded and indexed.`);
+  } catch (err) {
+    errEl.textContent = err.message;
+    errEl.style.display = 'block';
+  }
+  btn.disabled = false;
+  btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Upload &amp; Index`;
+}
+
+function showStatus(type, msg) {
+  const status = document.getElementById('upload-status');
+  status.className = `alert alert-${type}`;
+  status.innerHTML = msg;
+  status.style.display = 'block';
+  // Dismiss button
+  const btn = document.createElement('button');
+  btn.innerHTML = '&times;';
+  btn.style.cssText = 'background:none;border:none;cursor:pointer;float:right;font-size:1.1rem;line-height:1;padding:0;opacity:.7';
+  btn.setAttribute('aria-label', 'Dismiss');
+  btn.onclick = () => { status.style.display = 'none'; };
+  status.appendChild(btn);
+}
+
+function openRoles(id, name, current) {
+  editingDocId = id;
+  document.getElementById('roles-modal-name').textContent = name;
+  document.getElementById('edit-role-hr').checked = current.includes('hr');
+  document.getElementById('edit-role-developer').checked = current.includes('developer');
+  document.getElementById('roles-error').style.display = 'none';
+  openModal('roles-modal');
+}
+
+async function saveRoles() {
+  const errEl = document.getElementById('roles-error');
+  errEl.style.display = 'none';
+  const roles = [];
+  if (document.getElementById('edit-role-hr').checked) roles.push('hr');
+  if (document.getElementById('edit-role-developer').checked) roles.push('developer');
+  if (!roles.length) { errEl.textContent = 'Select at least one role.'; errEl.style.display = 'block'; return; }
+
+  const res = await api(`/admin/documents/${editingDocId}/roles`, { method: 'PUT', body: JSON.stringify({ roles }) });
+  if (!res.ok) {
+    const d = await res.json();
+    errEl.textContent = d.detail || 'Failed';
+    errEl.style.display = 'block';
+    return;
+  }
+  closeModal('roles-modal');
+  await loadDocuments();
+}
+
+async function deleteDoc(id, name) {
+  if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+  await api(`/admin/documents/${id}`, { method: 'DELETE' });
+  await loadDocuments();
+  showStatus('success', `"${esc(name)}" deleted.`);
+}
+
+/* ── Users ───────────────────────────────────────────────────────────────── */
+async function loadUsers() {
+  const el = document.getElementById('users-list');
+  el.innerHTML = '<p class="loading-text">Loading…</p>';
+  try {
+    const res   = await api('/admin/users');
+    const users = await res.json();
+    if (!users.length) {
+      el.innerHTML = `
+        <div class="empty-state">
+          <svg class="empty-state-icon" width="40" height="40" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+          </svg>
+          <h3>No users yet</h3>
+          <p>Create a user account to get started.</p>
+          <button class="btn btn-primary btn-sm" onclick="openModal('create-user-modal')">Create user</button>
+        </div>`;
+      return;
+    }
+    el.innerHTML = `<table class="data-table"><thead><tr>
+      <th>Username</th><th>Email</th><th>Role</th><th>Active</th><th>Created</th>
+    </tr></thead><tbody>${users.map(u => `
+      <tr>
+        <td>${esc(u.username)}</td>
+        <td style="color:var(--text-muted)">${esc(u.email)}</td>
+        <td>${u.is_admin
+          ? '<span class="badge badge-primary">admin</span>'
+          : `<select class="form-input" style="padding:.2rem .4rem;font-size:.78rem;width:auto"
+                     onchange="updateRole(${u.id},this.value)" aria-label="Role for ${esc(u.username)}">
+               <option value="developer" ${u.role === 'developer' ? 'selected' : ''}>Developer</option>
+               <option value="hr"        ${u.role === 'hr'        ? 'selected' : ''}>HR</option>
+             </select>`}</td>
+        <td>${u.is_active
+          ? '<span class="badge badge-success">Yes</span>'
+          : '<span class="badge badge-danger">No</span>'}</td>
+        <td style="color:var(--text-muted)">${new Date(u.created_at).toLocaleDateString()}</td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (err) {
+    el.innerHTML = `<p class="empty-list" style="color:var(--danger,#ef4444)">Failed to load users.</p>`;
+  }
+}
+
+async function updateRole(id, role) {
+  const res = await api(`/admin/users/${id}/role`, { method: 'PUT', body: JSON.stringify({ role }) });
+  if (!res.ok) {
+    const d = await res.json();
+    alert(d.detail || 'Failed to update role');
+    await loadUsers();
+  }
+}
+
+async function createUser() {
+  const errEl = document.getElementById('create-user-error');
+  errEl.style.display = 'none';
+  const body = {
+    username: document.getElementById('new-username').value.trim(),
+    email:    document.getElementById('new-email').value.trim(),
+    password: document.getElementById('new-password').value,
+    role:     document.getElementById('new-role').value,
+    is_admin: document.getElementById('new-is-admin').checked,
+  };
+  if (!body.username || !body.email || !body.password) {
+    errEl.textContent = 'All fields required.';
+    errEl.style.display = 'block';
+    return;
+  }
+  const res  = await api('/admin/users/create', { method: 'POST', body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) { errEl.textContent = data.detail || 'Failed'; errEl.style.display = 'block'; return; }
+  closeModal('create-user-modal');
+  document.getElementById('new-username').value = '';
+  document.getElementById('new-email').value    = '';
+  document.getElementById('new-password').value = '';
+  await loadUsers();
+  showStatus('success', `User "${esc(body.username)}" created.`);
+}
+
+/* ── Helpers ─────────────────────────────────────────────────────────────── */
+function esc(s) {
+  return String(s || '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function fmtSize(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+  return (b / 1048576).toFixed(1) + ' MB';
+}
+
+/* ── Folder upload ───────────────────────────────────────────────────────── */
+const ALLOWED_EXTS = new Set([
+  '.pdf','.txt','.md','.docx','.py','.js','.ts','.tsx','.jsx','.java',
+  '.go','.rs','.rb','.php','.cs','.cpp','.c','.h','.hpp','.kt','.swift',
+  '.scala','.sql','.sh','.bash','.zsh','.yaml','.yml','.json','.xml',
+  '.html','.css','.toml','.ini','.cfg',
+]);
+
+let _folderPollTimer = null;
+let _folderMode = 'browser';
+
+const _ONEDRIVE_HOSTS = ['onedrive.live.com', '1drv.ms', 'sharepoint.com', 'onedrive.com'];
+function _isOneDriveUrl(val) {
+  try {
+    const h = new URL(val).hostname.toLowerCase();
+    return _ONEDRIVE_HOSTS.some(d => h.includes(d));
+  } catch { return false; }
+}
+
+function onFolderPathInput(val) {
+  const isOD = _isOneDriveUrl(val);
+  document.getElementById('smb-creds').style.display      = isOD ? 'none' : '';
+  document.getElementById('onedrive-creds').style.display = isOD ? ''     : 'none';
+  document.getElementById('folder-path-hint').textContent = isOD
+    ? 'OneDrive URL detected — enter your Graph API access token below.'
+    : 'Absolute local path, UNC/SMB network share, or OneDrive browser URL.';
+}
+
+function switchFolderTab(mode) {
+  _folderMode = mode;
+  document.getElementById('tab-browser-panel').style.display = mode === 'browser' ? '' : 'none';
+  document.getElementById('tab-path-panel').style.display    = mode === 'path'    ? '' : 'none';
+  document.getElementById('tab-browser-btn').className = 'folder-tab' + (mode === 'browser' ? ' folder-tab-active' : '');
+  document.getElementById('tab-path-btn').className    = 'folder-tab' + (mode === 'path'    ? ' folder-tab-active' : '');
+  document.getElementById('tab-browser-btn').setAttribute('aria-selected', mode === 'browser' ? 'true' : 'false');
+  document.getElementById('tab-path-btn').setAttribute('aria-selected',    mode === 'path'    ? 'true' : 'false');
+  document.getElementById('folder-upload-error').style.display = 'none';
+}
+
+function _getFolderRoles() {
+  const roles = [];
+  if (document.getElementById('folder-role-hr').checked) roles.push('hr');
+  if (document.getElementById('folder-role-developer').checked) roles.push('developer');
+  return roles;
+}
+
+function _setFolderBusy(busy) {
+  const btn = document.getElementById('btn-folder-upload');
+  btn.disabled = busy;
+  if (busy) {
+    btn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span> Processing…';
+  } else {
+    btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Upload &amp; Index All`;
+  }
+  document.getElementById('btn-folder-cancel').textContent = busy ? 'Close' : 'Cancel';
+}
+
+function _showFolderError(msg) {
+  const el = document.getElementById('folder-upload-error');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function _updateProgressUI(total, processed, succeeded, failed, failedFiles) {
+  const panel = document.getElementById('folder-progress-panel');
+  panel.style.display = '';
+
+  const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
+  document.getElementById('fp-bar').style.width      = pct + '%';
+  document.getElementById('fp-pct').textContent      = pct + '%';
+  document.getElementById('fp-total').textContent    = total || '—';
+  document.getElementById('fp-ok').textContent       = succeeded;
+  document.getElementById('fp-fail').textContent     = failed;
+  document.getElementById('fp-progressbar').setAttribute('aria-valuenow', pct);
+
+  const label = document.getElementById('fp-label');
+  if      (total === 0)          label.textContent = 'Scanning folder…';
+  else if (processed < total)    label.textContent = `Processing file ${processed + 1} of ${total}…`;
+  else                           label.textContent = 'Done';
+
+  const listWrap = document.getElementById('fp-failed-list');
+  if (failedFiles && failedFiles.length) {
+    listWrap.style.display = '';
+    document.getElementById('fp-failed-items').innerHTML =
+      failedFiles.map(f =>
+        `<li title="${esc(f.error || '')}"><strong>${esc(f.filename)}</strong>${f.error ? ' — ' + esc(f.error) : ''}</li>`
+      ).join('');
+  } else {
+    listWrap.style.display = 'none';
+  }
+}
+
+function closeFolderModal() {
+  if (_folderPollTimer) { clearInterval(_folderPollTimer); _folderPollTimer = null; }
+  closeModal('folder-upload-modal');
+  document.getElementById('folder-browser-input').value     = '';
+  document.getElementById('folder-path-input').value        = '';
+  document.getElementById('folder-username').value          = '';
+  document.getElementById('folder-password').value          = '';
+  document.getElementById('folder-role-hr').checked         = false;
+  document.getElementById('folder-role-developer').checked  = false;
+  document.getElementById('folder-upload-error').style.display   = 'none';
+  document.getElementById('folder-progress-panel').style.display = 'none';
+  document.getElementById('fp-failed-items').innerHTML = '';
+  document.getElementById('fp-bar').style.width = '0%';
+  document.getElementById('folder-drop-label').innerHTML = 'Click to <strong>select a folder</strong>';
+  _setFolderBusy(false);
+  switchFolderTab('browser');
+}
+
+function startFolderUpload() {
+  document.getElementById('folder-upload-error').style.display = 'none';
+  const roles = _getFolderRoles();
+  if (!roles.length) { _showFolderError('Select at least one role.'); return; }
+  if (_folderMode === 'browser') _uploadBrowserFolder(roles);
+  else                           _startServerPathJob(roles);
+}
+
+/* Mode A — browser folder picker ─────────────────────────────────────────── */
+async function _uploadBrowserFolder(roles) {
+  const allFiles = Array.from(document.getElementById('folder-browser-input').files);
+  const files = allFiles.filter(f => {
+    const ext = '.' + f.name.split('.').pop().toLowerCase();
+    return ALLOWED_EXTS.has(ext);
+  });
+
+  if (!files.length) {
+    _showFolderError(allFiles.length
+      ? 'No supported files found in the selected folder.'
+      : 'Please select a folder first.');
+    return;
+  }
+
+  _setFolderBusy(true);
+  const total = files.length;
+  let succeeded = 0, failed = 0;
+  const failedFiles = [];
+  _updateProgressUI(total, 0, 0, 0, []);
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('roles', roles.join(','));
+    try {
+      const res = await api('/admin/documents/upload', { method: 'POST', body: fd });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || 'Upload failed'); }
+      succeeded++;
+    } catch (e) {
+      failed++;
+      failedFiles.push({ filename: file.name, error: e.message });
+    }
+    _updateProgressUI(total, i + 1, succeeded, failed, failedFiles);
+  }
+
+  _setFolderBusy(false);
+  await loadDocuments();
+  showStatus(
+    failed === 0 ? 'success' : 'warning',
+    `Folder upload complete: ${succeeded} indexed, ${failed} failed.`
+  );
+}
+
+/* Mode B — server-side path ──────────────────────────────────────────────── */
+async function _startServerPathJob(roles) {
+  const folderPath = document.getElementById('folder-path-input').value.trim();
+  if (!folderPath) { _showFolderError('Enter a folder path.'); return; }
+
+  const isOD = _isOneDriveUrl(folderPath);
+  const username    = isOD ? '' : document.getElementById('folder-username').value.trim();
+  const password    = isOD
+    ? document.getElementById('folder-onedrive-token').value.trim()
+    : document.getElementById('folder-password').value;
+  const onedrivePath = isOD ? document.getElementById('folder-onedrive-path').value.trim() : '';
+
+  _setFolderBusy(true);
+  _updateProgressUI(0, 0, 0, 0, []);
+
+  const fd = new FormData();
+  fd.append('folder_path', folderPath);
+  fd.append('roles', roles.join(','));
+  if (username)    fd.append('username', username);
+  if (password)    fd.append('password', password);
+  if (onedrivePath) fd.append('onedrive_path', onedrivePath);
+
+  let jobId;
+  try {
+    const res  = await api('/admin/documents/upload-folder', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to start folder job');
+    jobId = data.job_id;
+  } catch (e) {
+    _showFolderError(e.message);
+    _setFolderBusy(false);
+    return;
+  }
+
+  _folderPollTimer = setInterval(async () => {
+    try {
+      const res = await api(`/admin/documents/upload-folder/${jobId}`);
+      const job = await res.json();
+      if (!res.ok) throw new Error(job.detail || 'Polling failed');
+
+      _updateProgressUI(job.total, job.processed, job.succeeded, job.failed, job.failed_files);
+
+      if (job.status === 'completed' || job.status === 'failed') {
+        clearInterval(_folderPollTimer);
+        _folderPollTimer = null;
+        _setFolderBusy(false);
+        await loadDocuments();
+
+        if (job.status === 'failed' && job.total === 0) {
+          showStatus('error', job.failed_files[0]?.error || 'Folder job failed.');
+        } else {
+          showStatus(
+            job.failed === 0 ? 'success' : 'warning',
+            `Folder upload complete: ${job.succeeded} indexed, ${job.failed} failed.`
+          );
+        }
+      }
+    } catch (e) {
+      clearInterval(_folderPollTimer);
+      _folderPollTimer = null;
+      _setFolderBusy(false);
+      _showFolderError(e.message);
+    }
+  }, 1500);
+}
+
+/* ── Init ────────────────────────────────────────────────────────────────── */
+loadDocuments();
+</script>
+{% endblock %}
