@@ -10,10 +10,13 @@ Covers:
 from __future__ import annotations
 
 from core.security import (
+    TokenExpired,
+    TokenInvalid,
     create_access_token,
     create_refresh_token,
     decode_access_token,
     decode_refresh_token,
+    decode_token_strict,
     hash_password,
     verify_password,
 )
@@ -87,3 +90,60 @@ def test_garbage_string_rejected():
     assert decode_access_token("not.a.jwt") is None
     assert decode_refresh_token("not.a.jwt") is None
     assert decode_access_token("") is None
+
+
+# ── Strict decoder: TokenExpired vs TokenInvalid distinction ─────────────────
+
+
+def test_strict_decoder_round_trip_access():
+    tok = create_access_token(user_id=7, is_admin=False)
+    payload = decode_token_strict(tok, expected_type="access")
+    assert payload["sub"] == "7"
+
+
+def test_strict_decoder_round_trip_refresh():
+    tok = create_refresh_token(user_id=7)
+    payload = decode_token_strict(tok, expected_type="refresh")
+    assert payload["sub"] == "7"
+
+
+def test_strict_decoder_raises_token_invalid_on_wrong_type():
+    """Access token passed to a refresh-expected decoder -> TokenInvalid."""
+    import pytest
+
+    access = create_access_token(user_id=1, is_admin=False)
+    with pytest.raises(TokenInvalid, match="Wrong token type"):
+        decode_token_strict(access, expected_type="refresh")
+
+
+def test_strict_decoder_raises_token_invalid_on_malformed():
+    import pytest
+
+    with pytest.raises(TokenInvalid):
+        decode_token_strict("not-a-real-jwt", expected_type="access")
+
+
+def test_strict_decoder_raises_token_invalid_on_tampered_signature():
+    import pytest
+
+    tok = create_access_token(user_id=1, is_admin=False)
+    tampered = tok[:-1] + ("A" if tok[-1] != "A" else "B")
+    with pytest.raises(TokenInvalid):
+        decode_token_strict(tampered, expected_type="access")
+
+
+def test_strict_decoder_raises_token_expired_on_expired_token():
+    """Forge an already-expired token by passing a past `exp` claim."""
+    import pytest
+    from datetime import datetime, timedelta, timezone
+    from jose import jwt
+    from core.config import settings
+
+    past = datetime.now(timezone.utc) - timedelta(seconds=10)
+    expired = jwt.encode(
+        {"sub": "1", "type": "access", "exp": past, "iat": past},
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+    with pytest.raises(TokenExpired):
+        decode_token_strict(expired, expected_type="access")

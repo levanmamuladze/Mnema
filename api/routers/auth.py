@@ -9,7 +9,13 @@ from api.schemas.user import UserOut
 from core.config import settings
 from core.exceptions import UnauthorizedError
 from core.limiter import limiter
-from core.security import create_access_token, create_refresh_token, decode_refresh_token
+from core.security import (
+    TokenExpired,
+    TokenInvalid,
+    create_access_token,
+    create_refresh_token,
+    decode_token_strict,
+)
 from db.repositories.user_repository import UserRepository
 from db.session import get_session
 
@@ -68,13 +74,47 @@ async def login(
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(
-    body: RefreshRequest,
+    request: Request,
     response: Response,
+    body: RefreshRequest | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> TokenResponse:
-    payload = decode_refresh_token(body.refresh_token)
-    if payload is None:
-        raise UnauthorizedError("Invalid or expired refresh token")
+    """
+    Mint a fresh access + refresh token pair.
+
+    Token sources, in order:
+      1. HttpOnly cookie `refresh_token` (the browser flow).
+      2. JSON body `{"refresh_token": "..."}` (Postman / curl / other API
+         clients that don't speak cookies).
+
+    Returns:
+      - 401 with `detail="Refresh token expired"` — the cookie/body was a
+        legitimate token whose `exp` has passed. Frontend should send the
+        user to the login page (a re-login is the only recovery).
+      - 401 with `detail="Invalid refresh token"` — anything else (no
+        token, malformed, tampered signature, wrong type). Same UX as
+        expired, but a distinct log line helps incident response.
+    """
+    # 1. Prefer HttpOnly cookie — JS cannot read it, so this is the safer source.
+    token = request.cookies.get("refresh_token")
+
+    # 2. Fall back to the body for non-browser API clients.
+    if not token and body is not None:
+        token = body.refresh_token
+
+    if not token:
+        raise UnauthorizedError("No refresh token provided")
+
+    try:
+        payload = decode_token_strict(token, expected_type="refresh")
+    except TokenExpired:
+        logger.info("Refresh attempted with expired token")
+        raise UnauthorizedError("Refresh token expired")
+    except TokenInvalid as exc:
+        # Don't echo back the raw jose error to the client — that can leak
+        # internal details. Log it server-side; return a generic message.
+        logger.warning("Invalid refresh token: %s", exc)
+        raise UnauthorizedError("Invalid refresh token")
 
     repo = UserRepository(session)
     user = await repo.get_by_id(int(payload["sub"]))

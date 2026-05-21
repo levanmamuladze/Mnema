@@ -2,11 +2,34 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from jose import JWTError, jwt
+from jose.exceptions import ExpiredSignatureError
 from passlib.context import CryptContext
 
 from core.config import settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+# ── Typed token errors ────────────────────────────────────────────────────────
+#
+# The existing `decode_*_token` helpers return None on any failure, which makes
+# it impossible for callers to distinguish "expired, please refresh" from
+# "tampered, log out". These two subclasses give callers that distinction
+# without breaking the older Optional[dict] contract.
+
+class TokenError(Exception):
+    """Base class for JWT decode failures."""
+
+
+class TokenExpired(TokenError):
+    """Signature was valid but the `exp` claim is in the past."""
+
+
+class TokenInvalid(TokenError):
+    """
+    Signature, structure, or claim-type check failed. Anything that's not a
+    legitimate expiry: forged signature, malformed JWT, wrong token type.
+    """
 
 
 # ── Password ──────────────────────────────────────────────────────────────────
@@ -40,6 +63,32 @@ def create_refresh_token(user_id: int) -> str:
         data={"sub": str(user_id), "type": "refresh"},
         expires_delta=timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
     )
+
+
+def decode_token_strict(token: str, expected_type: str) -> dict[str, Any]:
+    """
+    Strict decoder: raises TokenExpired / TokenInvalid with no ambiguity.
+
+    Callers that need to differentiate "expired, please refresh" from
+    "log out immediately" should use this. The older decode_*_token helpers
+    still return None on any failure for backward compatibility.
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM],
+        )
+    except ExpiredSignatureError as exc:
+        raise TokenExpired("Token has expired") from exc
+    except JWTError as exc:
+        raise TokenInvalid(f"Invalid token: {exc}") from exc
+
+    if payload.get("type") != expected_type:
+        raise TokenInvalid(
+            f"Wrong token type: expected {expected_type!r}, got {payload.get('type')!r}"
+        )
+    return payload
 
 
 def decode_token(token: str) -> dict[str, Any] | None:
