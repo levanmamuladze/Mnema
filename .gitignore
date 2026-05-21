@@ -43,4 +43,4 @@ desktop.ini
 
 # Logs
 *.log
-logs/
+logs/.venv/
