@@ -18,10 +18,13 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from core.config import settings
-from db.repositories.document_repository import DocumentRepository
-from db.repositories.document_role_repository import DocumentRoleRepository
-from db.session import AsyncSessionLocal
-from services.ingestion_service import IngestionService
+
+# NOTE: The DocumentRepository / DocumentRoleRepository / AsyncSessionLocal /
+# IngestionService imports were previously at module level. They pull in
+# pgvector and sentence-transformers transitively, which made `_scan_local`
+# (a pure path-validation function) impossible to unit-test without the full
+# ML stack installed. They're now imported lazily inside `_process_one`,
+# which is the only function that actually uses them.
 
 # Extensions accepted by the upload pipeline (mirrors admin.py ALLOWED_EXTENSIONS)
 _ALLOWED_EXTENSIONS = {
@@ -59,32 +62,78 @@ def get_job(job_id: str) -> Optional[dict]:
 
 # ── Folder scanning ───────────────────────────────────────────────────────────
 
+def _is_path_under_any_root(path: "Path", roots: list["Path"]) -> bool:
+    """True iff `path` is the same as, or nested inside, one of `roots`."""
+    for root in roots:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def _scan_local(folder_path: str) -> list[Path]:
-    """Recursively collect files with allowed extensions from a local path."""
-    # Reject null bytes and path traversal components before any filesystem call
+    """
+    Recursively collect files with allowed extensions from a local path.
+
+    Security rules (all enforced before any read):
+      1. No null bytes in the input string.
+      2. Path must be absolute.
+      3. Path must resolve (.resolve() with strict=True) — non-existent paths
+         and dangling symlinks both fail here.
+      4. Resolved path must be under at least one entry in
+         settings.ALLOWED_UPLOAD_ROOTS. Empty allowlist = endpoint disabled.
+      5. Each file yielded must itself resolve back to a location under the
+         same root — protects against symlinks inside the tree that point out.
+    """
+    # 1. Null bytes are a classic poisoned-input vector; reject early.
     if "\x00" in folder_path:
         raise ValueError("Invalid folder path: null byte detected")
+
     raw = Path(folder_path)
+
+    # 2. Absolute path required so we don't depend on CWD.
     if not raw.is_absolute():
         raise ValueError("Folder path must be absolute (e.g. /data/docs or C:\\docs)")
-    # Resolve symlinks; the resolved path must still start with itself
-    # (prevents traversal via symlinks that escape the intended tree)
-    root = raw.resolve()
-    if root != raw.resolve():  # always equal after resolve — kept as explicit contract
-        raise ValueError("Folder path contains invalid components")
-    # Reject paths containing '..' after initial normalisation just to be safe
+
+    # 3. Resolve symlinks and verify existence in one strict call.
     try:
-        raw.relative_to(raw.anchor)  # confirms path is under its own root
-    except ValueError:
-        raise ValueError(f"Invalid folder path: {folder_path}")
-    if not root.exists():
+        root = raw.resolve(strict=True)
+    except FileNotFoundError:
         raise FileNotFoundError(f"Folder not found: {folder_path}")
+
     if not root.is_dir():
         raise NotADirectoryError(f"Path is not a directory: {folder_path}")
-    return [
-        p for p in root.rglob("*")
-        if p.is_file() and p.suffix.lower() in _ALLOWED_EXTENSIONS
-    ]
+
+    # 4. Allowlist check (fail-closed: empty allowlist blocks everything).
+    allowed_roots = settings.allowed_upload_roots
+    if not allowed_roots:
+        raise PermissionError(
+            "Folder uploads are disabled. Set ALLOWED_UPLOAD_ROOTS in the "
+            "environment to a comma-separated list of permitted absolute paths."
+        )
+    if not _is_path_under_any_root(root, allowed_roots):
+        raise PermissionError(
+            f"Folder path {folder_path!r} is not under any entry in "
+            f"ALLOWED_UPLOAD_ROOTS."
+        )
+
+    # 5. Walk the tree, but resolve each file and discard anything that escapes.
+    results: list[Path] = []
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in _ALLOWED_EXTENSIONS:
+            continue
+        try:
+            resolved = p.resolve(strict=True)
+        except (FileNotFoundError, OSError):
+            continue  # dangling symlink or unreadable entry — skip silently
+        if not _is_path_under_any_root(resolved, [root]):
+            continue  # symlink escapes the scanned tree — skip
+        results.append(resolved)
+    return results
 
 
 def _scan_smb(smb_path: str, username: str, password: str) -> list[tuple[str, Optional[bytes]]]:
@@ -332,6 +381,13 @@ async def _process_one(
     ingestion pipeline.  Errors are caught and appended to job["failed_files"]
     so a single failure never aborts the batch.
     """
+    # Lazy imports: keep this module importable without the full DB/ML stack
+    # so security-critical helpers (e.g. _scan_local) remain unit-testable.
+    from db.repositories.document_repository import DocumentRepository
+    from db.repositories.document_role_repository import DocumentRoleRepository
+    from db.session import AsyncSessionLocal
+    from services.ingestion_service import IngestionService
+
     if len(content) > settings.max_upload_size_bytes:
         job["failed"] += 1
         job["failed_files"].append({

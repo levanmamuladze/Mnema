@@ -26,5 +26,10 @@ os.environ.setdefault(
     "Z9pQrT2kJ7mNvHfA4bXsW8yLcUoEi3RgKqMaBdFhPjNwVxZtCu",
 )
 os.environ.setdefault("DEBUG", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+# Postgres-shaped URL so the engine accepts pool_size/max_overflow at construction.
+# No real connection is made during unit tests — engines connect lazily on execute().
+os.environ.setdefault(
+    "DATABASE_URL",
+    "postgresql+asyncpg://nobody:nobody@127.0.0.1:1/none",
+)
 os.environ.setdefault("OLLAMA_BASE_URL", "http://localhost:11434")

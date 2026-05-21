@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "uploads"
     MAX_UPLOAD_SIZE_MB: int = 50
 
+    # Folder-upload allowlist. Comma-separated absolute paths under which the
+    # /admin/documents/upload-folder endpoint is permitted to scan. Defaults to
+    # empty, which disables that endpoint entirely (fail-closed). Without this
+    # an admin could scan /etc, /root, /proc or other container-readable paths.
+    # Example (Docker): ALLOWED_UPLOAD_ROOTS=/app/uploads,/mnt/shared
+    ALLOWED_UPLOAD_ROOTS: str = ""
+
     @field_validator("SECRET_KEY")
     @classmethod
     def secret_key_must_be_strong(cls, v: str) -> str:
@@ -107,6 +114,23 @@ class Settings(BaseSettings):
     @property
     def allowed_origins_list(self) -> list[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def allowed_upload_roots(self) -> list["Path"]:
+        """
+        Parsed view of ALLOWED_UPLOAD_ROOTS. Returns resolved absolute Paths.
+        Empty list means folder uploads are disabled (fail-closed).
+        Lazy import: Path isn't needed at module-import time.
+        """
+        from pathlib import Path
+
+        roots: list[Path] = []
+        for raw in self.ALLOWED_UPLOAD_ROOTS.split(","):
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            roots.append(Path(stripped).resolve())
+        return roots
 
     @property
     def is_sqlite(self) -> bool:
