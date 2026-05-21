@@ -85,6 +85,38 @@ class DocumentChunkRepository(BaseRepository[DocumentChunk]):
             embedding=embedding,
         )
 
+    async def bulk_create_chunks(
+        self,
+        document_id: int,
+        contents_and_embeddings: list[tuple[str, list[float] | None]],
+    ) -> int:
+        """
+        Insert many chunks in a single DB round-trip.
+
+        The per-row create_chunk path does session.add + flush + refresh on
+        EVERY chunk. For a 500-chunk document that's 1500 round-trips. This
+        method does one session.add_all + one flush — typically 50-100× faster.
+
+        We do not refresh() the returned objects (they aren't returned at all)
+        because callers only need the count.
+
+        Returns: number of chunks inserted.
+        """
+        if not contents_and_embeddings:
+            return 0
+        chunk_objs = [
+            DocumentChunk(
+                document_id=document_id,
+                content=content,
+                chunk_index=i,
+                embedding=embedding,
+            )
+            for i, (content, embedding) in enumerate(contents_and_embeddings)
+        ]
+        self.session.add_all(chunk_objs)
+        await self.session.flush()
+        return len(chunk_objs)
+
     async def get_top_chunks_for_role(
         self,
         query_embedding: list[float],

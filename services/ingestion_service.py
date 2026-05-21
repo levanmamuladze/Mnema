@@ -38,14 +38,15 @@ class IngestionService:
         texts = [c["content"] for c in chunks]
         embeddings = await self.embedder.embed_batch_async(texts)
 
-        # 4. Store chunks + embeddings
-        for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-            await self.chunk_repo.create_chunk(
-                document_id=document.id,
-                content=chunk["content"],
-                chunk_index=i,
-                embedding=embedding,
-            )
+        # 4. Store chunks + embeddings in a single DB round-trip.
+        # The previous per-chunk loop did session.add + flush + refresh on
+        # every chunk — 1500 round-trips for a 500-chunk document.
+        await self.chunk_repo.bulk_create_chunks(
+            document_id=document.id,
+            contents_and_embeddings=list(
+                zip((c["content"] for c in chunks), embeddings)
+            ),
+        )
 
         # 5. Mark document as indexed
         await self.doc_repo.mark_indexed(document.id)
