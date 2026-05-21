@@ -81,8 +81,14 @@ def test_access_token_does_not_decode_as_refresh():
 
 def test_tampered_signature_rejected():
     tok = create_access_token(user_id=1, is_admin=False)
-    # Flip the very last char of the signature — anything decodable -> still wrong sig.
-    tampered = tok[:-1] + ("A" if tok[-1] != "A" else "B")
+    # Flip a middle character of the signature. The LAST base64url char of an
+    # HS256 signature has 4 unused padding bits, so changing it can produce
+    # the same underlying bytes — using a middle position keeps the test
+    # deterministic across runs.
+    head, _, sig = tok.rpartition(".")
+    mid = len(sig) // 2
+    new_char = "A" if sig[mid] != "A" else "B"
+    tampered = f"{head}.{sig[:mid]}{new_char}{sig[mid + 1:]}"
     assert decode_access_token(tampered) is None
 
 
@@ -127,7 +133,11 @@ def test_strict_decoder_raises_token_invalid_on_tampered_signature():
     import pytest
 
     tok = create_access_token(user_id=1, is_admin=False)
-    tampered = tok[:-1] + ("A" if tok[-1] != "A" else "B")
+    # See note in test_tampered_signature_rejected — flip a middle byte.
+    head, _, sig = tok.rpartition(".")
+    mid = len(sig) // 2
+    new_char = "A" if sig[mid] != "A" else "B"
+    tampered = f"{head}.{sig[:mid]}{new_char}{sig[mid + 1:]}"
     with pytest.raises(TokenInvalid):
         decode_token_strict(tampered, expected_type="access")
 
