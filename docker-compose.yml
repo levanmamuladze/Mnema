@@ -1,8 +1,12 @@
+# Compose project name is pinned so volume / network / container prefixes
+# stay consistent regardless of the parent folder name on disk.
+name: nexora
+
 services:
 
   db:
     image: pgvector/pgvector:pg17
-    container_name: postgres_pgvector
+    container_name: nexora_db
     restart: unless-stopped
     environment:
       POSTGRES_USER: app
@@ -19,11 +23,11 @@ services:
       retries: 10
       start_period: 10s
     networks:
-      - onboarding_net
+      - nexora_net
 
   ollama:
     image: ollama/ollama:latest
-    container_name: ollama
+    container_name: nexora_ollama
     restart: unless-stopped
     ports:
       - "11434:11434"
@@ -40,7 +44,7 @@ services:
       retries: 20
       start_period: 10s
     networks:
-      - onboarding_net
+      - nexora_net
 
   # One-shot init container: pulls the configured model once Ollama is healthy,
   # then exits. The app waits for this to complete successfully before booting.
@@ -48,7 +52,7 @@ services:
   # and every /api/chat call returns 404.
   ollama-init:
     image: ollama/ollama:latest
-    container_name: ollama_init
+    container_name: nexora_ollama_init
     depends_on:
       ollama:
         condition: service_healthy
@@ -63,11 +67,11 @@ services:
       "
     restart: "no"
     networks:
-      - onboarding_net
+      - nexora_net
 
   app:
     build: .
-    container_name: onboarding_app
+    container_name: nexora_app
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -101,17 +105,15 @@ services:
       retries: 5
       start_period: 60s
     networks:
-      - onboarding_net
+      - nexora_net
 
-# Opt-in GPU support: enable with `docker compose --profile gpu up`.
+# Opt-in GPU support: enable with the gpu overlay file.
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 # The default profile runs Ollama on CPU so a fresh clone works on any host.
-# To use a GPU, run:
-#   docker compose --profile gpu up --build
-# This overlays the GPU reservation onto the `ollama` service above.
 # (Requires nvidia-container-toolkit on the host.)
 
 networks:
-  onboarding_net:
+  nexora_net:
     driver: bridge
 
 volumes:

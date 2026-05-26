@@ -1,4 +1,4 @@
-# Onboarding AI — Verification & Inspection Guide
+# Nexora — Verification & Inspection Guide
 
 This guide covers three things:
 1. How conversations are saved and labeled

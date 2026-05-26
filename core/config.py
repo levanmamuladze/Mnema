@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     )
 
     # App
-    APP_NAME: str = "Onboarding AI"
+    APP_NAME: str = "Nexora"
     DEBUG: bool = False
 
     # Security

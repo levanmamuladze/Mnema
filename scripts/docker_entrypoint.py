@@ -150,7 +150,7 @@ async def seed_admin() -> None:
 
 async def main() -> None:
     print("\n========================================", flush=True)
-    print("  Onboarding AI - Docker startup", flush=True)
+    print("  Nexora - Docker startup", flush=True)
     print("========================================\n", flush=True)
     await wait_for_postgres()
     await enable_vector_extension()

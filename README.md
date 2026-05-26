@@ -1,4 +1,4 @@
-# Onboarding AI — Refactored
+# Nexora
 
 A production-ready AI onboarding assistant built with FastAPI, RAG, pgvector, and Ollama.
 The full stack — Postgres + pgvector, Ollama (with automatic model pull), and the FastAPI
@@ -68,7 +68,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ## Project Structure
 
 ```
-onboarding_refactored/
+nexora/
 ├── app/
 │   └── main.py                  # FastAPI factory + lifespan
 ├── core/
