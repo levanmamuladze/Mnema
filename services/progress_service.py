@@ -49,10 +49,15 @@ Assistant: {assistant_reply}
 """
 
 
+# Fire-and-forget post-processing calls — generous read budget for cold model
+# loads, modest connect budget so a wrong base URL fails fast.
+_PROGRESS_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=15.0, pool=5.0)
+
+
 async def _call_ollama(prompt: str, max_tokens: int = 200) -> str:
     """Single non-streaming Ollama call. Returns empty string on any error."""
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=_PROGRESS_TIMEOUT) as client:
             resp = await client.post(
                 f"{settings.OLLAMA_BASE_URL}/api/generate",
                 json={

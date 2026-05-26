@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Chat — Onboarding AI{% endblock %}
 {% block head %}
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 {% endblock %}
 
 {% block content %}
@@ -95,7 +95,20 @@
 let currentConvId = null;
 const user = (() => { try { return JSON.parse(sessionStorage.getItem('user') || '{}'); } catch(_){ return {}; } })();
 
-marked.setOptions({ breaks: true, gfm: true });
+// Render helpers. If marked / DOMPurify failed to load (offline, blocked CDN,
+// strict CSP), fall back to escaped plain text so streamed tokens are still
+// visible — previously this path silently dropped every token.
+const hasMarked    = typeof marked    !== 'undefined' && typeof marked.parse    === 'function';
+const hasDOMPurify = typeof DOMPurify !== 'undefined' && typeof DOMPurify.sanitize === 'function';
+if (hasMarked) marked.setOptions({ breaks: true, gfm: true });
+
+function renderMarkdown(text) {
+  if (hasMarked && hasDOMPurify) {
+    try { return DOMPurify.sanitize(marked.parse(text)); }
+    catch (_) { /* fall through to plain text */ }
+  }
+  return esc(text).replace(/\n/g, '<br>');
+}
 
 // ── Guard: redirect to login if no session ───────────────────────────────────
 (async function() {
@@ -253,8 +266,9 @@ function appendMessage(role, content, ts = null) {
   bubble.className = 'message-bubble';
 
   if (role === 'assistant') {
-    // SECURITY: always sanitise before injecting HTML — prevents XSS from LLM output
-    bubble.innerHTML = DOMPurify.sanitize(marked.parse(content));
+    // SECURITY: always sanitise before injecting HTML — prevents XSS from LLM output.
+    // renderMarkdown falls back to escaped plain text if libs aren't loaded.
+    bubble.innerHTML = renderMarkdown(content);
   } else {
     bubble.textContent = content;
   }
@@ -341,7 +355,7 @@ async function sendMessage() {
     });
 
     if (!res.ok) {
-      bubble.innerHTML = DOMPurify.sanitize('<em>Error sending message. Please try again.</em>');
+      bubble.innerHTML = '<em>Error sending message. Please try again.</em>';
       btn.disabled = false;
       return;
     }
@@ -359,22 +373,26 @@ async function sendMessage() {
 
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
-        try {
-          const data = JSON.parse(line.slice(6));
-          if (data.token) {
-            fullText += data.token;
-            // SECURITY: sanitise every incremental update
-            bubble.innerHTML = DOMPurify.sanitize(marked.parse(fullText));
-            scrollToBottom();
-          }
-          if (data.title_update) {
-            document.getElementById('chat-title').textContent = data.title_update;
-            await loadConversations();
-          }
-          if (data.error) {
-            bubble.innerHTML = DOMPurify.sanitize(`<em style="color:var(--text-muted)">${esc(data.error)}</em>`);
-          }
-        } catch (_) {}
+        let data;
+        try { data = JSON.parse(line.slice(6)); }
+        catch (_) { continue; }
+
+        if (data.token) {
+          fullText += data.token;
+          // SECURITY: renderMarkdown sanitises via DOMPurify (or falls back
+          // to escaped text when libs are unavailable).
+          bubble.innerHTML = renderMarkdown(fullText);
+          scrollToBottom();
+        }
+        if (data.title_update) {
+          document.getElementById('chat-title').textContent = data.title_update;
+          await loadConversations();
+        }
+        if (data.error) {
+          // Surface backend errors instead of letting the bubble stay empty
+          fullText += (fullText ? '\n\n' : '') + data.error;
+          bubble.innerHTML = `<em style="color:var(--text-muted)">${esc(data.error)}</em>`;
+        }
       }
     }
   } catch (_) {

@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
 
   db:
@@ -20,23 +18,52 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+    networks:
+      - onboarding_net
 
   ollama:
-    image: ollama/ollama
+    image: ollama/ollama:latest
     container_name: ollama
     restart: unless-stopped
     ports:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
-    entrypoint: ["ollama", "serve"]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_KEEP_ALIVE: 24h
+    healthcheck:
+      # /api/tags is the cheapest endpoint that confirms the daemon is serving HTTP.
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - onboarding_net
+
+  # One-shot init container: pulls the configured model once Ollama is healthy,
+  # then exits. The app waits for this to complete successfully before booting.
+  # Without this, a fresh `docker compose up` starts an Ollama with no model
+  # and every /api/chat call returns 404.
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: ollama_init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+    entrypoint: >
+      sh -c "
+        echo '[ollama-init] Pulling model: '$$OLLAMA_MODEL;
+        ollama pull $$OLLAMA_MODEL &&
+        echo '[ollama-init] Model ready: '$$OLLAMA_MODEL
+      "
+    restart: "no"
+    networks:
+      - onboarding_net
 
   app:
     build: .
@@ -48,22 +75,44 @@ services:
       db:
         condition: service_healthy
       ollama:
-        condition: service_started
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
     env_file:
       - .env
+    environment:
+      # Force the in-container hostnames even if .env has localhost values
+      # (this prevents "ConnectError: connect to localhost:11434" inside the container).
+      OLLAMA_BASE_URL: http://ollama:11434
+      DATABASE_URL: postgresql+asyncpg://app:postgres@db:5432/app
     volumes:
-      - .:/app
       - uploads_data:/app/uploads
+      # Named volume by default — models persist across rebuilds without
+      # requiring a host-specific path. Override with HF_CACHE_DIR in .env
+      # to bind-mount your local HF cache and skip the first-run download.
       - ${HF_CACHE_DIR:-huggingface_cache}:/root/.cache/huggingface
     command: >
       sh -c "python scripts/docker_entrypoint.py &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --proxy-headers"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      start_period: 60s
+    networks:
+      - onboarding_net
+
+# Opt-in GPU support: enable with `docker compose --profile gpu up`.
+# The default profile runs Ollama on CPU so a fresh clone works on any host.
+# To use a GPU, run:
+#   docker compose --profile gpu up --build
+# This overlays the GPU reservation onto the `ollama` service above.
+# (Requires nvidia-container-toolkit on the host.)
+
+networks:
+  onboarding_net:
+    driver: bridge
 
 volumes:
   postgres_data:

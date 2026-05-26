@@ -1,54 +1,67 @@
 # Onboarding AI — Refactored
 
-A production-ready AI onboarding assistant built with FastAPI, RAG, and Ollama.
+A production-ready AI onboarding assistant built with FastAPI, RAG, pgvector, and Ollama.
+The full stack — Postgres + pgvector, Ollama (with automatic model pull), and the FastAPI
+app — runs from a single `docker compose up --build`.
 
-## Quick Start
+## Quick Start (Docker)
 
-### 1. Create virtual environment
+```bash
+# From a clean clone:
+docker compose up --build
+```
+
+That command:
+
+1. Starts Postgres (with pgvector) and waits until it is healthy.
+2. Starts the Ollama daemon and waits until `/api/tags` responds.
+3. Runs `ollama-init`, which pulls the configured model (`qwen2.5:7b` by default).
+4. Starts the FastAPI app, which creates tables, the HNSW vector index, and seeds
+   the admin user from the values in `.env`.
+
+Open `http://localhost:8000` and sign in:
+
+| Field    | Value                                          |
+| -------- | ---------------------------------------------- |
+| Username | `admin`                                        |
+| Password | `Admin123!` (configured in `.env`)             |
+
+### GPU acceleration (optional)
+
+The default config runs Ollama on CPU so it works on any host. To enable an
+NVIDIA GPU (requires `nvidia-container-toolkit`):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
+
+### Custom model
+
+```bash
+# In .env:
+OLLAMA_MODEL=llama3.1:8b
+```
+
+Then `docker compose up --build` — the `ollama-init` service pulls the new model
+automatically.
+
+## Local (non-Docker) development
 
 ```bash
 python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# Mac/Linux:
-source .venv/bin/activate
-```
+# Windows:    .venv\Scripts\activate
+# Mac/Linux:  source .venv/bin/activate
 
-### 2. Install dependencies
-
-```bash
 pip install -r requirements.txt
-```
+python scripts/create_env.py     # populates .env with a strong SECRET_KEY
 
-### 3. Set up environment
-
-```bash
-python scripts/create_env.py   # generates .env with a random SECRET_KEY
-# Then edit .env if you need to change DATABASE_URL or other settings
-```
-
-### 4. Start Ollama
-
-```bash
+# In another terminal:
 ollama serve
-ollama pull llama3.1
-```
+ollama pull qwen2.5:7b
 
-### 5. Create the admin user
-
-```bash
-python scripts/seed_admin.py
-# Default: username=admin, email=admin@company.com, password=Admin123!
-# Custom:  python scripts/seed_admin.py --username myname --email me@co.com --password MyPass1!
-```
-
-### 6. Run the app
-
-```bash
+# Then:
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
-
-Open http://localhost:8000 — log in with your admin credentials.
 
 ---
 

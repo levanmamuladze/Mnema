@@ -5,27 +5,28 @@ WORKDIR /app
 
 # System dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libpq-dev \
-    curl \
+        gcc \
+        libpq-dev \
+        curl \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Install Python dependencies first so layer caches well across code edits.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy app
+# Application code
 COPY . .
 
-# Preloaded HuggingFace cache (offline mode)
-COPY hf_cache /root/.cache/huggingface
+RUN mkdir -p uploads /root/.cache/huggingface
 
-RUN mkdir -p uploads
-
-# Offline mode for HuggingFace
-ENV TRANSFORMERS_OFFLINE=1
-ENV HF_DATASETS_OFFLINE=1
-ENV HF_HUB_OFFLINE=1
+# Models are downloaded on first run into the /root/.cache/huggingface volume.
+# Do NOT set TRANSFORMERS_OFFLINE/HF_HUB_OFFLINE here — that would force
+# offline mode even when the volume is empty, breaking the first launch.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 EXPOSE 8000
 

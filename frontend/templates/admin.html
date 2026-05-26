@@ -137,16 +137,19 @@
     <h3 id="upload-modal-title">Upload Document</h3>
     <div id="upload-error" class="alert alert-error" style="display:none" role="alert"></div>
 
-    <!-- Drag-drop zone -->
+    <!-- Drag-drop zone.  The <input> lives OUTSIDE the drop-zone div on
+         purpose: when it was nested inside, the post-picker click event
+         bubbled back up to the parent's onclick and reopened the dialog. -->
+    <input type="file" id="upload-file" accept=".pdf,.txt,.docx" hidden
+           onclick="event.stopPropagation()"
+           onchange="updateDropZoneLabel('single-drop-zone', this.files)"/>
     <div class="drop-zone" id="single-drop-zone"
          role="button" tabindex="0" aria-label="Drop a file here or click to browse"
          onclick="document.getElementById('upload-file').click()"
-         onkeydown="if(event.key==='Enter'||event.key===' ')document.getElementById('upload-file').click()"
+         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();document.getElementById('upload-file').click();}"
          ondragover="handleDragOver(event,'single-drop-zone')"
          ondragleave="handleDragLeave('single-drop-zone')"
          ondrop="handleDrop(event,'upload-file','single-drop-zone')">
-      <input type="file" id="upload-file" accept=".pdf,.txt,.docx"
-             onchange="updateDropZoneLabel('single-drop-zone', this.files)"/>
       <div class="drop-zone-icon">
         <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
       </div>
@@ -204,13 +207,15 @@
 
     <!-- Mode A: browser folder picker -->
     <div id="tab-browser-panel" role="tabpanel">
-      <!-- Drag-drop zone for folder -->
+      <!-- Folder picker input — outside the drop-zone for the same reason as
+           the single-file input above (avoids duplicate-dialog bug). -->
+      <input type="file" id="folder-browser-input" webkitdirectory multiple hidden
+             onclick="event.stopPropagation()"
+             onchange="updateDropZoneLabel('folder-drop-zone', this.files, true)"/>
       <div class="drop-zone" id="folder-drop-zone"
            role="button" tabindex="0" aria-label="Select a folder"
            onclick="document.getElementById('folder-browser-input').click()"
-           onkeydown="if(event.key==='Enter'||event.key===' ')document.getElementById('folder-browser-input').click()">
-        <input type="file" id="folder-browser-input" webkitdirectory multiple
-               onchange="updateDropZoneLabel('folder-drop-zone', this.files, true)"/>
+           onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();document.getElementById('folder-browser-input').click();}">
         <div class="drop-zone-icon">
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         </div>

@@ -1,0 +1,16 @@
+# GPU overlay for Ollama.
+#
+# Usage (requires nvidia-container-toolkit on the host):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#
+# Without this file, Ollama runs on CPU — slower but works on any machine.
+
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

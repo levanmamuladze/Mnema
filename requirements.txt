@@ -10,7 +10,6 @@ alembic==1.14.0
 asyncpg==0.30.0
 psycopg2-binary==2.9.10
 pgvector==0.3.5
-aiohttp==3.8.4
 
 # Auth
 python-jose[cryptography]==3.3.0
@@ -18,7 +17,6 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 
 # AI / RAG
-ollama==0.4.4
 sentence-transformers==3.3.1
 pymupdf==1.25.1
 python-docx==1.1.2
@@ -27,11 +25,11 @@ python-docx==1.1.2
 pydantic-settings==2.6.1
 pydantic[email]==2.10.3
 
-# HTTP client
+# HTTP client (also used by the Ollama streaming code path)
 httpx==0.27.0
 
 # Rate limiting
 slowapi==0.1.9
 
-# Network share access (SMB/CIFS) — required only for folder uploads via UNC paths
+# Network share access (SMB/CIFS) — only used by folder-upload endpoint
 smbprotocol==1.13.0

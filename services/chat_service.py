@@ -84,6 +84,10 @@ class ChatService:
                 from rag.pipeline import RAGPipeline
                 from rag.retriever import Retriever
 
+                logger.info(
+                    "chat[conv=%s user=%s role=%s admin=%s]: retrieving",
+                    conversation_id, self.user.id, self.user.role, self.user.is_admin,
+                )
                 async with AsyncSessionLocal() as session:
                     retriever = Retriever(
                         session,
@@ -93,11 +97,20 @@ class ChatService:
                     rag = RAGPipeline().with_retriever(retriever)
                     chunks = await retriever.retrieve(user_message, top_k=None)
 
+                logger.info(
+                    "chat[conv=%s]: retrieved %d chunks, streaming from LLM",
+                    conversation_id, len(chunks),
+                )
                 async for token in rag._stream_from_chunks(
                     user_message, chunks, history_dicts
                 ):
                     full_response += token
                     yield f"data: {json.dumps({'token': token})}\n\n"
+
+                logger.info(
+                    "chat[conv=%s]: stream complete (%d chars)",
+                    conversation_id, len(full_response),
+                )
 
             except Exception:
                 logger.exception(

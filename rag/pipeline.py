@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import AsyncGenerator
 
 import httpx
@@ -6,6 +7,17 @@ import httpx
 from core.config import settings
 from rag.prompts import build_prompt
 from rag.retriever import Retriever
+
+logger = logging.getLogger(__name__)
+
+
+# A 7B model can need 30–120 s to load into memory on the first /api/chat
+# call after Ollama starts. The previous single 120 s value applied to every
+# phase (connect / read / write / pool), and the read budget was burned
+# during model load — the first token never arrived in time, the stream
+# errored, and the user saw nothing. Read budget here is per-event, so it
+# only triggers when Ollama stops sending tokens, not over total runtime.
+_OLLAMA_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=10.0)
 
 
 class RAGPipeline:
@@ -45,7 +57,6 @@ class RAGPipeline:
         Called directly by ChatService so retrieval and streaming can use
         separate DB session lifecycles.
         """
-        # Admins see all docs — use the generic "Company" config, not a role-specific one
         effective_role = None if (self._retriever and self._retriever.is_admin) else (
             self._retriever.user_role if self._retriever else None
         )
@@ -67,30 +78,61 @@ class RAGPipeline:
             "model": settings.OLLAMA_MODEL,
             "messages": messages,
             "stream": True,
+            "options": {"temperature": 0.3},
         }
+        logger.info(
+            "Streaming from Ollama: url=%s model=%s messages=%d",
+            url, settings.OLLAMA_MODEL, len(messages),
+        )
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=_OLLAMA_TIMEOUT) as client:
                 async with client.stream("POST", url, json=payload) as response:
-                    response.raise_for_status()
+                    if response.status_code >= 400:
+                        # Read the body so the error log shows what Ollama
+                        # actually complained about (e.g. "model not found").
+                        body = await response.aread()
+                        text = body.decode("utf-8", errors="replace")[:500]
+                        logger.error(
+                            "Ollama HTTP %s: %s",
+                            response.status_code, text,
+                        )
+                        yield (
+                            f"\n\n[Ollama error {response.status_code}: {text}]"
+                        )
+                        return
+
                     async for line in response.aiter_lines():
                         if not line.strip():
                             continue
                         try:
                             data = json.loads(line)
-                            token = data.get("message", {}).get("content", "")
-                            if token:
-                                yield token
-                            if data.get("done", False):
-                                break
                         except json.JSONDecodeError:
+                            logger.warning("Non-JSON line from Ollama: %r", line[:200])
                             continue
-        except httpx.ConnectError:
+                        if "error" in data:
+                            logger.error("Ollama returned error: %s", data["error"])
+                            yield f"\n\n[Ollama error: {data['error']}]"
+                            return
+                        token = data.get("message", {}).get("content", "")
+                        if token:
+                            yield token
+                        if data.get("done", False):
+                            return
+        except httpx.ConnectError as exc:
+            logger.exception("Ollama ConnectError")
             yield (
-                f"\n\n[Error: Could not connect to Ollama at {settings.OLLAMA_BASE_URL}. "
-                "Make sure it is running.]"
+                f"\n\n[Could not connect to Ollama at {settings.OLLAMA_BASE_URL}: {exc}]"
             )
-        except httpx.TimeoutException:
-            yield "\n\n[Error: Ollama request timed out after 120 seconds]"
-        except httpx.HTTPStatusError as e:
-            yield f"\n\n[Error: Ollama returned HTTP {e.response.status_code}]"
+        except httpx.ReadTimeout:
+            logger.exception("Ollama read timeout (no token for >%s s)", _OLLAMA_TIMEOUT.read)
+            yield (
+                f"\n\n[Ollama stopped responding (no token for {int(_OLLAMA_TIMEOUT.read)}s). "
+                "The model may have failed to load — check `docker logs ollama`.]"
+            )
+        except httpx.TimeoutException as exc:
+            logger.exception("Ollama timeout")
+            yield f"\n\n[Ollama timed out: {exc}]"
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Unexpected Ollama streaming failure")
+            yield f"\n\n[Unexpected error talking to Ollama: {exc}]"

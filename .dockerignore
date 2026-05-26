@@ -10,7 +10,10 @@ venv/
 .git/
 .gitignore
 uploads/
+hf_cache/
 .chroma_db/
 *.log
 logs/
 node_modules/
+tests/
+.pytest_cache/
