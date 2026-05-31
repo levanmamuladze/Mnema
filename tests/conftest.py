@@ -22,7 +22,6 @@ if str(ROOT) not in sys.path:
 # These must be set BEFORE `core.config` (or anything that imports it) loads.
 os.environ.setdefault(
     "SECRET_KEY",
-    # 48 random-ish chars, no insecure-fragment substrings.
     "Z9pQrT2kJ7mNvHfA4bXsW8yLcUoEi3RgKqMaBdFhPjNwVxZtCu",
 )
 os.environ.setdefault("DEBUG", "true")

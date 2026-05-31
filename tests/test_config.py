@@ -75,7 +75,6 @@ def test_escape_hatch_does_not_bypass_length_check(monkeypatch):
 
 def test_assert_production_ready_passes_with_strong_key():
     s = _make(STRONG_KEY, DEBUG=False)
-    # Should not raise.
     s.assert_production_ready()
 
 

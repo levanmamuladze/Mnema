@@ -1,212 +1,312 @@
-# Nexora
+# Mnema
 
-A production-ready AI onboarding assistant built with FastAPI, RAG, pgvector, and Ollama.
-The full stack — Postgres + pgvector, Ollama (with automatic model pull), and the FastAPI
-app — runs from a single `docker compose up --build`.
+**An AI-powered, role-aware onboarding assistant.** Employees ask questions in
+plain language and get answers grounded *only* in the company documents their
+role is allowed to see.
 
-## Quick Start (Docker)
+Built with FastAPI, PostgreSQL + pgvector, a local Ollama LLM, and a
+retrieval-augmented-generation (RAG) pipeline with cross-encoder reranking. The
+entire stack — database, vector index, LLM, and app — comes up from a single
+`docker compose up --build`.
+
+---
+
+## Executive Summary
+
+Onboarding new hires is slow and repetitive: the same questions about policies,
+tools, and processes get asked over and over, and the answers live scattered
+across PDFs, wikis, and people's heads. Mnema turns a company's existing
+documents into a conversational assistant that is:
+
+- **Role-aware** — an HR employee and an engineer asking the same question get
+  answers drawn from different document sets. The model is *architecturally*
+  prevented from answering outside the user's granted scope.
+- **Grounded** — answers cite retrieved company documents; the system refuses
+  rather than hallucinate when no relevant document exists.
+- **Self-hosted** — runs entirely on your infrastructure with a local LLM
+  (Ollama). No document content leaves the network. Suitable for sensitive
+  internal material.
+
+---
+
+## Product Overview
+
+| | |
+|---|---|
+| **Who it's for** | Companies onboarding employees across distinct teams/departments that each have their own confidential documentation. |
+| **Core loop** | Admin uploads docs → tags them with roles → employee chats with a role-scoped assistant grounded in those docs. |
+| **Differentiator** | Dynamic, per-role RBAC enforced at the database query layer, not just in prompts; fully self-hostable with a local LLM. |
+
+---
+
+## Features
+
+- **Conversational RAG chat** with token-by-token streaming (Server-Sent Events).
+- **Role-based access control (RBAC)** — dynamic roles (not hardcoded), per-role
+  document tagging, role-admins scoped to the roles they own, and global
+  superusers. Retrieval is filtered by role membership in SQL.
+- **Per-role AI persona** — each role defines a persona (name, domain, scope) the
+  assistant adopts, layered on top of a system-owned safety scaffold that
+  role-admins cannot rewrite.
+- **Document ingestion** — PDF, DOCX, Markdown, and 40+ text/source-code formats;
+  load → chunk → embed (batched) → store with a pgvector HNSW index.
+- **Cross-encoder reranking** — dense retrieval produces candidates; a
+  cross-encoder reorders them for precision.
+- **Secure auth** — JWT in HttpOnly cookies, refresh-token rotation with a
+  server-side reuse-detection denylist, bcrypt password hashing.
+- **Admin console** — manage users, roles, role memberships, document uploads,
+  and document/role assignments from a web UI.
+- **Operational hardening** — request-ID-correlated structured logging, admin
+  audit log lines, rate limiting, security headers/CSP, DB-backed health check,
+  and Alembic migrations applied automatically on startup.
+
+---
+
+## Architecture
+
+```
+Browser (Jinja2 + vanilla JS, SSE)
+        │  HttpOnly cookie auth
+        ▼
+┌──────────────────────────────────────────────────────────┐
+│ FastAPI app                                                │
+│                                                            │
+│  api/routers     auth · chat · admin     (+ rate limiting) │
+│       │                                                    │
+│  services        ChatService · IngestionService           │
+│       │                                                    │
+│  rag             Retriever · Reranker · RAGPipeline        │
+│       │            (Embedder, prompts)                     │
+│       │                                                    │
+│  db/repositories  ownership- & RBAC-scoped queries         │
+│       │                                                    │
+│  db/models       SQLAlchemy 2.0 (async)                    │
+└───────┬───────────────────────────────┬───────────────────┘
+        │                                │
+        ▼                                ▼
+ PostgreSQL 17 + pgvector          Ollama (local LLM)
+ (HNSW vector index)               qwen2.5:7b by default
+```
+
+**Layering rule:** `api → services → rag → db/repositories → db/models → core`.
+Dependencies never point upward. `core/` (config, security, exceptions) is
+imported everywhere and imports nothing from the app.
+
+**Session lifecycle:** one async DB session per request (auto-commit on success,
+rollback on exception). The chat path deliberately uses short-lived sessions per
+phase so no DB connection is held open during slow LLM streaming.
+
+**RBAC enforcement point:** access is enforced in the *query* (role-join /
+ownership filters), not in the prompt or the UI. The persona/prompt scope is a
+second layer, not the primary control.
+
+---
+
+## Technology Stack
+
+| Layer | Technology |
+|---|---|
+| API framework | FastAPI 0.115, Uvicorn |
+| Language | Python 3.11 (async/await throughout) |
+| Database | PostgreSQL 17 + `pgvector` (HNSW index) |
+| ORM / migrations | SQLAlchemy 2.0 (async), Alembic |
+| LLM serving | Ollama (default model `qwen2.5:7b`) |
+| Embeddings | `sentence-transformers` — `BAAI/bge-base-en-v1.5` (768-dim) |
+| Reranking | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+| Auth | python-jose (JWT), passlib + bcrypt |
+| Rate limiting | slowapi |
+| Frontend | Jinja2 templates, vanilla JS, marked + DOMPurify |
+| Packaging | Docker + Docker Compose |
+
+---
+
+## Installation
+
+### Prerequisites
+- Docker and Docker Compose, **or**
+- Python 3.11, PostgreSQL 17 with the `vector` extension, and a running Ollama.
+
+### Running with Docker (recommended)
 
 ```bash
-# From a clean clone:
+git clone <repo-url> mnema && cd mnema
+cp .env.example .env          # then edit secrets (see below)
 docker compose up --build
 ```
 
-That command:
+This will, in order: start Postgres and wait until healthy → start Ollama and
+wait until it serves HTTP → pull the configured model (`ollama-init`) → apply
+Alembic migrations, seed the superuser and starter roles, then launch the app.
 
-1. Starts Postgres (with pgvector) and waits until it is healthy.
-2. Starts the Ollama daemon and waits until `/api/tags` responds.
-3. Runs `ollama-init`, which pulls the configured model (`qwen2.5:7b` by default).
-4. Starts the FastAPI app, which creates tables, the HNSW vector index, and seeds
-   the admin user from the values in `.env`.
+Open **http://localhost:8000** and sign in with the admin credentials from your
+`.env`.
 
-Open `http://localhost:8000` and sign in:
+> **Before exposing this anywhere shared**, set a strong `SECRET_KEY` and
+> `ADMIN_PASSWORD`, change the Postgres password in `docker-compose.yml`, set
+> `DEBUG=false`, and set `COOKIE_SECURE=true` behind HTTPS. See
+> [Security Notes](#security-notes).
 
-| Field    | Value                                          |
-| -------- | ---------------------------------------------- |
-| Username | `admin`                                        |
-| Password | `Admin123!` (configured in `.env`)             |
+### GPU acceleration (default)
 
-### GPU acceleration (optional)
-
-The default config runs Ollama on CPU so it works on any host. To enable an
-NVIDIA GPU (requires `nvidia-container-toolkit`):
+Ollama runs on the GPU by default — it's dramatically faster than CPU. This
+requires the **NVIDIA Container Toolkit** on the host. No extra flags are needed:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+docker compose up --build
 ```
 
-### Custom model
+**No NVIDIA GPU?** Comment out the `deploy:` block on the `ollama` service in
+`docker-compose.yml` to fall back to CPU (works on any host, but generating a
+7B model on CPU is slow — expect multi-second-to-minute responses).
 
-```bash
-# In .env:
-OLLAMA_MODEL=llama3.1:8b
-```
+---
 
-Then `docker compose up --build` — the `ollama-init` service pulls the new model
-automatically.
+## Environment Variables
 
-## Local (non-Docker) development
+| Variable | Default | Description |
+|---|---|---|
+| `SECRET_KEY` | **required** | JWT signing key. Min 32 chars; rejected if it contains an insecure fragment. Generate: `python -c 'import secrets; print(secrets.token_urlsafe(48))'` |
+| `DEBUG` | `false` | Enables SQL echo and exposes `/api/docs`. Must be `false` in production. |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./rag_app.db` | DB DSN. In Docker, set to the Postgres service. |
+| `ALLOWED_ORIGINS` | `http://localhost:8000,...` | Comma-separated CORS origin allowlist. |
+| `COOKIE_SECURE` | `false` | Set `true` behind HTTPS (also enables HSTS). |
+| `COOKIE_SAMESITE` | `lax` | Cookie SameSite policy. |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Access-token lifetime. |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh-token lifetime. |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint. |
+| `OLLAMA_MODEL` | `qwen2.5:7b` | Chat / title model. |
+| `EMBED_MODEL` / `EMBED_DIMENSION` | `BAAI/bge-base-en-v1.5` / `768` | Embedding model — **dimension must match the model**. |
+| `RERANKER_MODEL` / `RERANKER_ENABLED` | `cross-encoder/ms-marco-MiniLM-L-6-v2` / `true` | Reranking. |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `512` / `64` | Chunking. |
+| `TOP_K_RETRIEVAL` / `RETRIEVAL_CANDIDATES` | `5` / `20` | Retrieval depth. |
+| `MAX_UPLOAD_SIZE_MB` | `50` | Upload cap. |
+| `ADMIN_USERNAME` / `ADMIN_EMAIL` / `ADMIN_PASSWORD` | `admin` / … / `ChangeMe123!` | Seeded superuser. Weak defaults are **refused** when `DEBUG=false`. |
+
+---
+
+## Running Locally (non-Docker)
 
 ```bash
 python -m venv .venv
-# Windows:    .venv\Scripts\activate
-# Mac/Linux:  source .venv/bin/activate
+# Windows:   .venv\Scripts\activate
+# Unix:      source .venv/bin/activate
 
 pip install -r requirements.txt
-python scripts/create_env.py     # populates .env with a strong SECRET_KEY
+python scripts/create_env.py          # writes .env with a strong SECRET_KEY
 
 # In another terminal:
 ollama serve
 ollama pull qwen2.5:7b
 
-# Then:
+# Apply migrations, then run:
+alembic upgrade head
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ---
 
-## Project Structure
+## Testing
 
+```bash
+pip install -r requirements-dev.txt
+pytest                # unit tests (run against in-memory SQLite where applicable)
 ```
-nexora/
-├── app/
-│   └── main.py                  # FastAPI factory + lifespan
-├── core/
-│   ├── config.py                # All settings via pydantic-settings
-│   ├── security.py              # JWT + bcrypt
-│   └── exceptions.py            # Typed HTTP exceptions
-├── db/
-│   ├── models.py                # SQLAlchemy models (User, Document, etc.)
-│   ├── session.py               # Async engine + get_session dependency
-│   └── repositories/
-│       ├── base.py              # Generic CRUD repository
-│       ├── user_repository.py
-│       ├── conversation_repository.py
-│       └── document_repository.py
-├── api/
-│   ├── deps.py                  # get_current_user, require_admin
-│   ├── routers/
-│   │   ├── auth.py              # POST /auth/login, /auth/refresh, GET /auth/me
-│   │   ├── chat.py              # GET/POST /chat/conversations, streaming messages
-│   │   └── admin.py             # User + document management
-│   └── schemas/
-│       ├── auth.py
-│       ├── user.py
-│       ├── chat.py
-│       └── document.py
-├── services/
-│   ├── chat_service.py          # Orchestrates RAG + message persistence
-│   └── ingestion_service.py     # load → chunk → embed → store
-├── rag/
-│   ├── embedder.py              # SentenceTransformer wrapper (async-safe)
-│   ├── retriever.py             # Cosine similarity retrieval
-│   ├── prompts.py               # Prompt builder
-│   └── pipeline.py              # Streams tokens from Ollama
-├── ingestion/
-│   ├── loader.py                # PDF + text file loader
-│   └── chunker.py               # Overlap-aware text splitter
-├── frontend/
-│   ├── templates/               # Jinja2: base, index (login), chat, admin
-│   └── static/                  # CSS + JS
-├── scripts/
-│   ├── create_env.py            # Generates .env from .env.example
-│   ├── seed_admin.py            # Creates first admin user
-│   └── index_documents.py       # Re-index documents
-├── uploads/                     # Uploaded files (gitignored)
-├── .env.example                 # Template — commit this
-├── .env                         # Your secrets — never commit
-└── requirements.txt
-```
+
+Current automated coverage focuses on unit-level logic: JWT/token rotation and
+revocation, refresh flow, prompt building, schema validation, chunking,
+concurrent chat streaming, and ingestion batching. See the project review for
+known gaps (API/RBAC integration and end-to-end tests).
 
 ---
 
-## API Endpoints
+## Deployment
+
+- **Migrations** run automatically on container start (`scripts/docker_entrypoint.py`),
+  including a safe stamp path for pre-Alembic databases.
+- **Health check** at `GET /health` verifies database connectivity (returns 503
+  if the DB is unreachable); the Docker healthcheck uses it.
+- **Backups** — see `scripts/backup.sh` / `scripts/backup.ps1` / `scripts/restore.sh`.
+- **Logs** are JSON-friendly and request-ID correlated; admin actions emit
+  `admin_audit …` lines.
+
+For multi-instance / higher-concurrency deployments, see the scaling notes in the
+project review (single Uvicorn worker, in-memory rate limiter, and serialized LLM
+generation are the current limits to address first).
+
+---
+
+## API Documentation
+
+Interactive docs (`/api/docs`, `/api/redoc`) are served **only when `DEBUG=true`**.
 
 ### Authentication
 | Method | Path | Description |
-|--------|------|-------------|
-| POST | `/auth/login` | Login, returns access + refresh tokens |
-| POST | `/auth/refresh` | Refresh access token |
-| GET | `/auth/me` | Get current user info |
+|---|---|---|
+| POST | `/auth/login` | Log in; sets HttpOnly cookies and returns tokens. |
+| POST | `/auth/refresh` | Rotate the token pair (reuse-detected). |
+| POST | `/auth/logout` | Clear cookies and revoke the refresh token. |
+| GET | `/auth/me` | Current user + role memberships. |
 
 ### Chat (authenticated)
 | Method | Path | Description |
-|--------|------|-------------|
-| GET | `/chat/conversations` | List user's conversations |
-| POST | `/chat/conversations` | Create new conversation |
-| GET | `/chat/conversations/{id}` | Get conversation with messages |
-| POST | `/chat/conversations/{id}/messages` | Send message (SSE stream) |
-| GET | `/chat/learning-insights` | Get user's learning insights |
+|---|---|---|
+| GET/POST | `/chat/conversations` | List / create conversations. |
+| GET | `/chat/conversations/{id}` | Conversation with messages (ownership-enforced). |
+| PATCH/DELETE | `/chat/conversations/{id}` | Rename / delete. |
+| POST | `/chat/conversations/{id}/messages` | Send a message; SSE token stream. |
+| GET | `/chat/documents` | Documents visible to the caller. |
 
-### Admin only
+### Admin (superuser / role-admin)
 | Method | Path | Description |
-|--------|------|-------------|
-| POST | `/admin/users/create` | Create a new user |
-| GET | `/admin/users` | List all users |
-| POST | `/admin/documents/upload` | Upload + index a document |
-| GET | `/admin/documents` | List all documents |
-| DELETE | `/admin/documents/{id}` | Delete a document |
-
-### Other
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check |
-| GET | `/api/docs` | Swagger UI |
-| GET | `/api/redoc` | ReDoc UI |
+|---|---|---|
+| POST/GET | `/admin/users` , `/admin/users/create` | Manage users (superuser). |
+| PUT/DELETE | `/admin/users/{id}/roles` , `/admin/users/{id}` | Roles / delete user. |
+| GET/POST/PUT/DELETE | `/admin/roles…` | Manage roles and memberships. |
+| POST/GET/PUT/DELETE | `/admin/documents…` | Upload, list, retag, delete documents. |
 
 ---
 
-## Configuration
+## Security Notes
 
-All config lives in `.env`. Key variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SECRET_KEY` | (required) | JWT signing key — min 32 chars |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./rag_app.db` | DB connection string |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | `llama3.1` | Model to use |
-| `EMBED_MODEL` | `BAAI/bge-base-en-v1.5` | Sentence transformer model |
-| `CHUNK_SIZE` | `512` | Characters per chunk |
-| `CHUNK_OVERLAP` | `64` | Overlap between chunks |
-| `TOP_K_RETRIEVAL` | `5` | Number of chunks to retrieve |
-| `MAX_UPLOAD_SIZE_MB` | `50` | Max file upload size |
-| `DEBUG` | `false` | Enables SQL logging + CORS wildcard |
-
-### Switch to PostgreSQL
-
-```env
-DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/rag_app
-```
-
-Then run:
-```sql
-CREATE DATABASE rag_app;
-```
+- Tokens are stored in **HttpOnly cookies** (JS cannot read them); a Bearer
+  header fallback supports API clients.
+- Refresh tokens **rotate** on use and old `jti`s are denylisted to detect reuse.
+- All authorization is enforced in the **database query** (ownership + role
+  joins), with superuser bypass; the `is_superuser` JWT claim is informational
+  only and re-verified against the DB on every request.
+- Assistant output is rendered through **DOMPurify**; user content via
+  `textContent`. A strict-ish CSP and standard security headers are sent on every
+  response.
+- Uploads are size-capped during read, filename-sanitized, MIME/extension
+  allowlisted, and stored per-uploader with a UUID name.
+- **Before production:** strong `SECRET_KEY` and `ADMIN_PASSWORD`, change the
+  Postgres password, `DEBUG=false`, `COOKIE_SECURE=true` behind HTTPS, a real
+  CORS allowlist, and a scheduled job to purge expired denylist rows.
 
 ---
 
-## Re-indexing Documents
+## Screenshots
 
-If you add documents directly to the DB or need to re-embed:
-
-```bash
-# Index only unindexed documents
-python scripts/index_documents.py
-
-# Force re-index everything
-python scripts/index_documents.py --all
-```
+> _Add screenshots here:_ login, role-scoped chat with streaming, and the admin
+> console (users / roles / document upload).
 
 ---
 
-## Architecture Notes
+## Roadmap
 
-**Dependency direction:** `api` → `services` → `db/repositories` → `db/models` → `core`  
-Never import upward. `core/` is imported by all layers but imports nothing from them.
+- Automated RBAC isolation and API integration test suite; CI pipeline.
+- Horizontal scalability: shared (Redis) rate-limit store, multiple workers, and
+  an LLM request queue with backpressure.
+- Background cleanup jobs (expired tokens).
+- Observability: metrics endpoint and error tracking.
+- Optional managed/cloud LLM backend selectable per deployment.
 
-**Session lifecycle:** One `AsyncSession` per request, auto-committed on success, rolled back on exception. Never share sessions across requests.
+---
 
-**Streaming:** Chat responses use Server-Sent Events (SSE). The frontend reads `data:` lines and appends tokens to the bubble in real time.
+## License
 
-**Embeddings:** The `SentenceTransformer` model is loaded once at startup (via `@lru_cache`) and reused. Embedding runs in a thread pool executor so it doesn't block the async event loop.
+Proprietary — all rights reserved (update to your chosen license).
+
+## Contact
+
+Maintainer: **levanmamoulatze@gmail.com**

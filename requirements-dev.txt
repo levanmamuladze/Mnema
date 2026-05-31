@@ -6,3 +6,6 @@
 pytest==8.3.3
 pytest-asyncio==0.24.0
 pytest-cov==5.0.0
+# In-memory SQLite driver for the async DB tests (token denylist, etc.).
+# Runtime uses asyncpg/Postgres; tests don't.
+aiosqlite==0.20.0

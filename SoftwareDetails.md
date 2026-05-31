@@ -1,4 +1,4 @@
-# Nexora
+# Mnema
 
 A production-ready **AI onboarding assistant** that answers employee
 questions using your company's internal documentation, augmented with
@@ -20,16 +20,14 @@ Built with:
 - Context-aware answers using indexed company documents
 - Role-based document access (HR / Developer / Admin)
 - Real-time token streaming over Server-Sent Events
-- Single-file upload (PDF, DOCX, TXT, source code) + folder uploads
-  (local path, UNC/SMB share, or OneDrive via Microsoft Graph)
+- Single-file upload + whole-folder upload from the browser
+  (PDF, DOCX, TXT/Markdown, CSV/JSON, source code)
 - HNSW vector index for fast pgvector retrieval at scale
 - Optional cross-encoder reranking
   (`cross-encoder/ms-marco-MiniLM-L-6-v2`)
-- Learning-progress tracking per user/topic
 - Auto-generated conversation titles after the first exchange
 - JWT auth with HttpOnly cookies + refresh-token rotation
 - Rate-limiting (slowapi), security headers, CORS allowlist
-- Folder-upload path allowlist (fail-closed)
 - Strong-`SECRET_KEY` validation that hard-fails on insecure defaults
 
 ------------------------------------------------------------------------
@@ -45,7 +43,7 @@ Browser  --HTTPS-->  FastAPI (uvicorn)
                        |                  +-- Retriever (pgvector + reranker)
                        |                  +-- Prompt builder (role-aware)
                        |                  +-- Ollama /api/chat (stream)
-                       +-- /admin       Documents, users, folder jobs
+                       +-- /admin       Documents, users, roles
 
 PostgreSQL (pgvector)   <-- async SQLAlchemy
 Ollama (CPU or NVIDIA)  <-- httpx streaming, per-phase timeouts
@@ -75,7 +73,7 @@ db  (pgvector/pgvector:pg17)  --healthcheck (pg_isready) -->
 ## Project Structure
 
 ```
-nexora/
+mnema/
 ├── app/
 │   └── main.py                  # FastAPI factory + lifespan
 ├── api/
@@ -94,8 +92,7 @@ nexora/
 ├── services/
 │   ├── chat_service.py          # SSE generator, RAG orchestration
 │   ├── ingestion_service.py     # load -> chunk -> embed -> bulk insert
-│   ├── folder_upload_service.py # local / SMB / OneDrive scanners
-│   └── progress_service.py      # topic extraction + title generation
+│   └── title_service.py         # auto conversation-title generation
 ├── rag/
 │   ├── pipeline.py              # streams from Ollama /api/chat
 │   ├── retriever.py             # pgvector + reranker, RBAC-filtered
@@ -114,8 +111,7 @@ nexora/
 │   ├── seed_admin.py            # standalone admin-create utility
 │   └── index_documents.py       # CLI re-indexer
 ├── tests/                       # pytest suite (auth, ingestion, RAG)
-├── docker-compose.yml           # default (CPU)
-├── docker-compose.gpu.yml       # opt-in NVIDIA overlay
+├── docker-compose.yml           # full stack (GPU by default)
 ├── Dockerfile
 ├── .env.example
 ├── requirements.txt
@@ -139,7 +135,6 @@ nexora/
 - **Document loaders**: PyMuPDF (PDF), `python-docx`, plain text /
   source code
 - **Rate limiting**: `slowapi`
-- **Network share access**: `smbprotocol` (optional, folder uploads)
 - **Containerisation**: Docker Compose v2 with healthchecks and ordered
   dependencies
 
@@ -166,14 +161,17 @@ This will:
 Open `http://localhost:8000` and sign in with the credentials from
 `.env` (defaults: `admin` / `Admin123!`).
 
-### GPU (optional, NVIDIA only)
+### GPU (default, NVIDIA)
+
+Ollama runs on the GPU by default — no extra flags:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+docker compose up --build
 ```
 
-Requires `nvidia-container-toolkit` on the host. Without the overlay
-Ollama runs on CPU.
+Requires `nvidia-container-toolkit` on the host. To run on CPU instead,
+comment out the `deploy:` block on the `ollama` service in
+`docker-compose.yml`.
 
 ### Switching the model
 
@@ -202,7 +200,6 @@ automatically.
 | `TOP_K_RETRIEVAL`    | `5`                                    | chunks injected into the prompt                             |
 | `RETRIEVAL_CANDIDATES` | `20`                                 | candidates fetched before reranking                         |
 | `ALLOWED_ORIGINS`    | `http://localhost:8000,...`            | CORS allowlist (explicit, no wildcards)                     |
-| `ALLOWED_UPLOAD_ROOTS` | empty                                | folder-upload allowlist; empty = endpoint disabled (fail-closed) |
 | `HF_CACHE_DIR`       | unset (named volume)                   | optional: bind-mount host HF cache to skip first-run download |
 
 ------------------------------------------------------------------------
@@ -215,7 +212,8 @@ automatically.
   starts before the model is ready.
 - Removed `TRANSFORMERS_OFFLINE` + the baked HF cache COPY — models
   download to a named volume on first run.
-- GPU reservation moved to an opt-in overlay (`docker-compose.gpu.yml`).
+- GPU is the default (`deploy:` block on the `ollama` service); CPU is a
+  one-line comment-out for hosts without an NVIDIA GPU.
 - Dropped `--reload` and the `.:/app` bind mount that killed
   in-flight SSE responses during edits.
 - Bulk-insert document chunks (one `flush` per document, not per chunk)

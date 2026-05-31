@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Sign In — Nexora{% endblock %}
+{% block title %}Sign In — Mnema{% endblock %}
 {% block content %}
 <div class="auth-wrapper">
   <div class="card auth-card">
@@ -59,7 +59,7 @@ async function handleLogin(e) {
     // Cache non-sensitive profile in sessionStorage for UI nav only
     try { sessionStorage.setItem('user', JSON.stringify(me)); } catch (_) {}
 
-    window.location.href = me.is_admin ? '/admin-ui' : '/chat-ui';
+    window.location.href = me.is_superuser ? '/admin-ui' : '/chat-ui';
   } catch (err) {
     errEl.textContent    = err.message;
     errEl.style.display  = 'block';

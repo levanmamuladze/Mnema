@@ -30,10 +30,10 @@ async def seed_admin(username: str, email: str, password: str) -> None:
                 username=username,
                 email=email,
                 plain_password=password,
-                is_admin=True,
+                is_superuser=True,
             )
             await session.commit()
-            print(f"\n✅ Admin user created successfully!")
+            print(f"\n✅ Superuser created successfully!")
             print(f"   Username : {user.username}")
             print(f"   Email    : {user.email}")
             print(f"   ID       : {user.id}")

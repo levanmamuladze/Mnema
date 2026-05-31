@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,8 +15,10 @@ from core.security import (
     TokenInvalid,
     create_access_token,
     create_refresh_token,
+    decode_token,
     decode_token_strict,
 )
+from db.repositories.token_repository import RevokedTokenRepository
 from db.repositories.user_repository import UserRepository
 from db.session import get_session
 
@@ -64,7 +67,7 @@ async def login(
         logger.warning("Failed login attempt for username=%s ip=%s", body.username, request.client)
         raise UnauthorizedError("Invalid username or password")
 
-    access_token = create_access_token(user.id, user.is_admin)
+    access_token = create_access_token(user.id, user.is_superuser)
     refresh_token = create_refresh_token(user.id)
     _set_auth_cookies(response, access_token, refresh_token)
 
@@ -73,6 +76,7 @@ async def login(
 
 
 @router.post("/refresh", response_model=TokenResponse)
+@limiter.limit("20/minute")
 async def refresh_token(
     request: Request,
     response: Response,
@@ -116,12 +120,34 @@ async def refresh_token(
         logger.warning("Invalid refresh token: %s", exc)
         raise UnauthorizedError("Invalid refresh token")
 
+    user_id = int(payload["sub"])
+    jti = payload.get("jti")
+    denylist = RevokedTokenRepository(session)
+
+    # Rotation-reuse detection: a denylisted jti means the token was logged out
+    # or already rotated (a replay) → reject. Legacy tokens without jti pass once.
+    if jti is not None and await denylist.is_revoked(jti):
+        logger.warning(
+            "Refresh-token reuse detected for user %s (jti=%s)", user_id, jti
+        )
+        raise UnauthorizedError("Invalid refresh token")
+
     repo = UserRepository(session)
-    user = await repo.get_by_id(int(payload["sub"]))
+    user = await repo.get_by_id(user_id)
     if user is None or not user.is_active:
         raise UnauthorizedError("User not found")
 
-    access_token = create_access_token(user.id, user.is_admin)
+    # Consume the presented token: record its jti so it can't be replayed.
+    if jti is not None:
+        exp = payload.get("exp")
+        expires_at = (
+            datetime.fromtimestamp(exp, tz=timezone.utc)
+            if exp is not None
+            else datetime.now(timezone.utc)
+        )
+        await denylist.revoke(jti, user_id, expires_at)
+
+    access_token = create_access_token(user.id, user.is_superuser)
     new_refresh = create_refresh_token(user.id)
     _set_auth_cookies(response, access_token, new_refresh)
 
@@ -129,14 +155,48 @@ async def refresh_token(
 
 
 @router.post("/logout", status_code=204)
-async def logout(response: Response) -> None:
-    """Clear both auth cookies.  Works regardless of whether the user is logged in."""
+async def logout(
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """Clear both auth cookies and revoke the refresh token.
+
+    Clearing the cookie alone left a stolen refresh token valid for its
+    full lifetime. We now also denylist its jti so it can't be replayed.
+    Best-effort: a missing/garbage cookie still returns 204 (logout must
+    never fail for the user).
+    """
     response.delete_cookie("access_token")
     response.delete_cookie("refresh_token", path="/auth/refresh")
+
+    token = request.cookies.get("refresh_token")
+    if not token:
+        return
+    payload = decode_token(token)
+    if not payload or payload.get("type") != "refresh":
+        return
+    jti = payload.get("jti")
+    if jti is None:
+        return
+    exp = payload.get("exp")
+    expires_at = (
+        datetime.fromtimestamp(exp, tz=timezone.utc)
+        if exp is not None
+        else datetime.now(timezone.utc)
+    )
+    try:
+        denylist = RevokedTokenRepository(session)
+        await denylist.revoke(jti, int(payload["sub"]), expires_at)
+    except Exception:
+        logger.exception("Failed to revoke refresh token on logout")
 
 
 @router.get("/me", response_model=UserOut)
 async def get_me(
     current_user=Depends(get_current_user),
 ) -> UserOut:
-    return UserOut.model_validate(current_user)
+    # from_orm_user projects role_memberships -> MembershipOut. The
+    # repository already eager-loaded memberships in get_by_id, so this
+    # never triggers lazy IO.
+    return UserOut.from_orm_user(current_user)

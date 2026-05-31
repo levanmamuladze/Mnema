@@ -7,8 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _INSECURE_KEY_FRAGMENTS = ("dev-", "change", "secret", "example", "placeholder", "your-")
 
-# Set ALLOW_INSECURE_SECRET_KEY=1 in your shell to bypass the fragment check
-# during local prototyping. Production deployments must never set this.
+# Set =1 to bypass the fragment check for local prototyping; never in prod.
 _ALLOW_INSECURE_ENV = "ALLOW_INSECURE_SECRET_KEY"
 
 
@@ -21,18 +20,14 @@ class Settings(BaseSettings):
     )
 
     # App
-    APP_NAME: str = "Nexora"
+    APP_NAME: str = "Mnema"
     DEBUG: bool = False
 
-    # Security
-    # No default: pydantic-settings will raise at construction time if SECRET_KEY
-    # is missing from both the environment and the .env file. The previous default
-    # ("dev-secret-key-change-in-production-min-32-chars") passed the length check
-    # silently and gave a false sense of security.
+    # Security — no default: construction fails if unset (a default would
+    # silently pass the length check and give false security).
     SECRET_KEY: str
 
-    # CORS — comma-separated list of allowed origins, e.g. "https://app.example.com"
-    # Defaults to localhost in development; must be set explicitly in production.
+    # CORS — comma-separated allowed origins; set explicitly in production.
     ALLOWED_ORIGINS: str = "http://localhost:8000,http://127.0.0.1:8000"
 
     # Cookies — set COOKIE_SECURE=true behind HTTPS in production
@@ -66,13 +61,6 @@ class Settings(BaseSettings):
     # File upload
     UPLOAD_DIR: str = "uploads"
     MAX_UPLOAD_SIZE_MB: int = 50
-
-    # Folder-upload allowlist. Comma-separated absolute paths under which the
-    # /admin/documents/upload-folder endpoint is permitted to scan. Defaults to
-    # empty, which disables that endpoint entirely (fail-closed). Without this
-    # an admin could scan /etc, /root, /proc or other container-readable paths.
-    # Example (Docker): ALLOWED_UPLOAD_ROOTS=/app/uploads,/mnt/shared
-    ALLOWED_UPLOAD_ROOTS: str = ""
 
     @field_validator("SECRET_KEY")
     @classmethod
@@ -114,23 +102,6 @@ class Settings(BaseSettings):
     @property
     def allowed_origins_list(self) -> list[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
-
-    @property
-    def allowed_upload_roots(self) -> list["Path"]:
-        """
-        Parsed view of ALLOWED_UPLOAD_ROOTS. Returns resolved absolute Paths.
-        Empty list means folder uploads are disabled (fail-closed).
-        Lazy import: Path isn't needed at module-import time.
-        """
-        from pathlib import Path
-
-        roots: list[Path] = []
-        for raw in self.ALLOWED_UPLOAD_ROOTS.split(","):
-            stripped = raw.strip()
-            if not stripped:
-                continue
-            roots.append(Path(stripped).resolve())
-        return roots
 
     @property
     def is_sqlite(self) -> bool:

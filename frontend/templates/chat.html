@@ -1,7 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Chat — Nexora{% endblock %}
+{% block title %}Chat — Mnema{% endblock %}
 {% block head %}
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.9/dist/purify.min.js"></script>
 {% endblock %}
 
 {% block content %}
@@ -21,24 +22,6 @@
       <div class="skeleton-list" aria-label="Loading conversations">
         <div class="skeleton-item"></div><div class="skeleton-item"></div><div class="skeleton-item"></div>
       </div>
-    </div>
-
-    <div class="progress-section" id="progress-section" style="display:none" aria-label="Learning progress">
-      <div class="progress-label">
-        <span>Learning progress</span>
-        <span id="progress-overall" aria-live="polite">0%</span>
-      </div>
-      <div class="progress-bar-track" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
-        <div class="progress-bar-fill" id="progress-bar" style="width:0%"></div>
-      </div>
-      <div class="progress-topics" id="progress-topics"></div>
-    </div>
-
-    <div class="sidebar-footer">
-      <button class="btn btn-ghost btn-full" onclick="showProgress()" style="font-size:.8rem;justify-content:flex-start;gap:.5rem" aria-label="Show learning progress">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-        Learning Progress
-      </button>
     </div>
   </aside>
 
@@ -332,22 +315,44 @@ function scrollToBottom() {
 
 // ── Send ─────────────────────────────────────────────────────────────────────
 async function sendMessage() {
-  if (!currentConvId) await newConversation();
+  // The send button is the single source of truth for "a stream is in
+  // flight". Reading it here closes the Enter-key bypass: previously the
+  // keyboard handler called sendMessage even though the button was
+  // disabled, which interleaved a second request with the first stream
+  // and scrambled the message order in the DOM.
+  const btn = document.getElementById('btn-send');
+  if (btn.disabled) return;
+
   const input = document.getElementById('message-input');
   const content = input.value.trim();
   if (!content) return;
 
+  // Lock SYNCHRONOUSLY, before any await, so a burst of Enter presses
+  // can't all pass the guard above before the first one acquires the lock.
+  btn.disabled = true;
   input.value = '';
   autoResize(input);
-  const btn = document.getElementById('btn-send');
-  btn.disabled = true;
+
+  if (!currentConvId) await newConversation();
+
+  // Pin the conversation this send is targeting. The user can navigate
+  // to another conversation — or delete this one entirely — while we're
+  // still streaming. We need a stable id to (a) compare against
+  // currentConvId before touching the DOM and (b) keep the request URL
+  // bound to the original conversation even if currentConvId mutates.
+  const targetConvId = currentConvId;
 
   appendMessage('user', content);
   const bubble = appendTyping();
 
+  // Helper: true iff the user is still viewing the conversation this
+  // stream belongs to. Used to gate every DOM mutation below so an
+  // in-flight reply never bleeds into a different conversation's view.
+  const stillHere = () => currentConvId === targetConvId;
+
   let fullText = '';
   try {
-    const res = await fetch(`/chat/conversations/${currentConvId}/messages`, {
+    const res = await fetch(`/chat/conversations/${targetConvId}/messages`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -355,7 +360,9 @@ async function sendMessage() {
     });
 
     if (!res.ok) {
-      bubble.innerHTML = '<em>Error sending message. Please try again.</em>';
+      if (stillHere()) {
+        bubble.innerHTML = '<em>Error sending message. Please try again.</em>';
+      }
       btn.disabled = false;
       return;
     }
@@ -381,57 +388,59 @@ async function sendMessage() {
           fullText += data.token;
           // SECURITY: renderMarkdown sanitises via DOMPurify (or falls back
           // to escaped text when libs are unavailable).
-          bubble.innerHTML = renderMarkdown(fullText);
-          scrollToBottom();
-        }
-        if (data.title_update) {
-          document.getElementById('chat-title').textContent = data.title_update;
-          await loadConversations();
+          if (stillHere()) {
+            bubble.innerHTML = renderMarkdown(fullText);
+            scrollToBottom();
+          }
         }
         if (data.error) {
           // Surface backend errors instead of letting the bubble stay empty
           fullText += (fullText ? '\n\n' : '') + data.error;
-          bubble.innerHTML = `<em style="color:var(--text-muted)">${esc(data.error)}</em>`;
+          if (stillHere()) {
+            bubble.innerHTML = `<em style="color:var(--text-muted)">${esc(data.error)}</em>`;
+          }
         }
       }
     }
   } catch (_) {
-    bubble.innerHTML = '<em style="color:var(--text-muted)">Could not reach server. Check your connection and try again.</em>';
+    if (stillHere()) {
+      bubble.innerHTML = '<em style="color:var(--text-muted)">Could not reach server. Check your connection and try again.</em>';
+    }
   }
 
-  document.getElementById('typing-row')?.remove();
-  if (fullText) appendMessage('assistant', fullText);
+  // Only finalize the DOM if the user is still on the originating
+  // conversation. If they've switched (or deleted it), the typing row
+  // they're looking at belongs to a different conversation — touching it
+  // would scramble that view. The assistant reply is already persisted
+  // server-side against the right conversation, so navigating back later
+  // (if it still exists) will show it correctly.
+  if (stillHere()) {
+    document.getElementById('typing-row')?.remove();
+    if (fullText) appendMessage('assistant', fullText);
+  }
 
   btn.disabled = false;
   document.getElementById('message-input').focus();
-  loadProgress();
+
+  // The server now generates the auto-title in the background instead of
+  // blocking the SSE stream, so the title is not part of the reply we just
+  // consumed. Refresh the sidebar once immediately (in case the task was
+  // fast) and again after a short delay to catch the common case where the
+  // title finishes a couple seconds after the reply.
+  refreshSidebarTitle();
+  setTimeout(refreshSidebarTitle, 4000);
 }
 
-// ── Progress ─────────────────────────────────────────────────────────────────
-async function loadProgress() {
-  const res = await api('/chat/progress');
-  if (!res?.ok) return;
-  const data = await res.json();
-  if (!data.items?.length) return;
-
-  document.getElementById('progress-section').style.display = 'block';
-  const overall = Math.round(data.overall);
-  document.getElementById('progress-overall').textContent = overall + '%';
-  const bar = document.getElementById('progress-bar');
-  bar.style.width = overall + '%';
-  bar.closest('[role="progressbar"]')?.setAttribute('aria-valuenow', overall);
-
-  document.getElementById('progress-topics').innerHTML = data.items.slice(0, 5).map(item => `
-    <div class="progress-topic-row">
-      <span class="progress-topic-name" title="${esc(item.topic)}">${esc(item.topic)}</span>
-      <div class="progress-topic-bar"><div class="progress-topic-bar-fill" style="width:${item.progress}%"></div></div>
-      <span class="progress-topic-val">${Math.round(item.progress)}%</span>
-    </div>`).join('');
-}
-
-async function showProgress() {
-  await loadProgress();
-  document.getElementById('progress-section').scrollIntoView({ behavior: 'smooth' });
+async function refreshSidebarTitle() {
+  await loadConversations();
+  // Keep the chat-header title in sync with whatever the sidebar now shows.
+  const item = document.querySelector(`.conv-item[data-id="${currentConvId}"] .conv-item-title`);
+  if (item) {
+    const headerEl = document.getElementById('chat-title');
+    if (headerEl && item.textContent && item.textContent !== 'New conversation') {
+      headerEl.textContent = item.textContent;
+    }
+  }
 }
 
 // ── Input helpers ─────────────────────────────────────────────────────────────
@@ -450,6 +459,5 @@ function esc(s) {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadConversations();
-loadProgress();
 </script>
 {% endblock %}

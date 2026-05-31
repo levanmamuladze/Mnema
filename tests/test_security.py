@@ -45,11 +45,11 @@ def test_hash_password_produces_different_hashes_each_call():
 
 
 def test_access_token_round_trip():
-    tok = create_access_token(user_id=42, is_admin=True)
+    tok = create_access_token(user_id=42, is_superuser=True)
     payload = decode_access_token(tok)
     assert payload is not None
     assert payload["sub"] == "42"
-    assert payload["is_admin"] is True
+    assert payload["is_superuser"] is True
     assert payload["type"] == "access"
 
 
@@ -72,7 +72,7 @@ def test_refresh_token_does_not_decode_as_access():
 
 def test_access_token_does_not_decode_as_refresh():
     """Symmetric guard: access tokens are not valid refresh tokens."""
-    at = create_access_token(user_id=1, is_admin=False)
+    at = create_access_token(user_id=1, is_superuser=False)
     assert decode_refresh_token(at) is None
 
 
@@ -80,11 +80,9 @@ def test_access_token_does_not_decode_as_refresh():
 
 
 def test_tampered_signature_rejected():
-    tok = create_access_token(user_id=1, is_admin=False)
-    # Flip a middle character of the signature. The LAST base64url char of an
-    # HS256 signature has 4 unused padding bits, so changing it can produce
-    # the same underlying bytes — using a middle position keeps the test
-    # deterministic across runs.
+    tok = create_access_token(user_id=1, is_superuser=False)
+    # Flip a MIDDLE signature char: the last base64url char has unused padding
+    # bits that can decode to the same bytes, which would flake the test.
     head, _, sig = tok.rpartition(".")
     mid = len(sig) // 2
     new_char = "A" if sig[mid] != "A" else "B"
@@ -102,7 +100,7 @@ def test_garbage_string_rejected():
 
 
 def test_strict_decoder_round_trip_access():
-    tok = create_access_token(user_id=7, is_admin=False)
+    tok = create_access_token(user_id=7, is_superuser=False)
     payload = decode_token_strict(tok, expected_type="access")
     assert payload["sub"] == "7"
 
@@ -117,7 +115,7 @@ def test_strict_decoder_raises_token_invalid_on_wrong_type():
     """Access token passed to a refresh-expected decoder -> TokenInvalid."""
     import pytest
 
-    access = create_access_token(user_id=1, is_admin=False)
+    access = create_access_token(user_id=1, is_superuser=False)
     with pytest.raises(TokenInvalid, match="Wrong token type"):
         decode_token_strict(access, expected_type="refresh")
 
@@ -132,7 +130,7 @@ def test_strict_decoder_raises_token_invalid_on_malformed():
 def test_strict_decoder_raises_token_invalid_on_tampered_signature():
     import pytest
 
-    tok = create_access_token(user_id=1, is_admin=False)
+    tok = create_access_token(user_id=1, is_superuser=False)
     # See note in test_tampered_signature_rejected — flip a middle byte.
     head, _, sig = tok.rpartition(".")
     mid = len(sig) // 2

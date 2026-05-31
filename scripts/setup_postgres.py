@@ -49,26 +49,26 @@ async def setup_database(pg_password: str, app_password: str) -> None:
     # Use DO blocks to handle 'already exists' gracefully
     await conn.execute(f"""
         DO $$ BEGIN
-            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'onboarding_user') THEN
-                CREATE ROLE onboarding_user WITH LOGIN PASSWORD '{app_password}';
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app') THEN
+                CREATE ROLE app WITH LOGIN PASSWORD '{app_password}';
             ELSE
-                ALTER ROLE onboarding_user WITH PASSWORD '{app_password}';
+                ALTER ROLE app WITH PASSWORD '{app_password}';
             END IF;
         END $$;
     """)
 
     # Check if DB exists
     exists = await conn.fetchval(
-        "SELECT 1 FROM pg_database WHERE datname = 'onboarding_ai'"
+        "SELECT 1 FROM pg_database WHERE datname = 'app'"
     )
     if not exists:
-        await conn.execute("CREATE DATABASE onboarding_ai OWNER onboarding_user")
-        print("   ✅ Created database: onboarding_ai")
+        await conn.execute("CREATE DATABASE app OWNER app")
+        print("   ✅ Created database: app")
     else:
-        print("   ℹ️  Database onboarding_ai already exists — skipping creation")
+        print("   ℹ️  Database app already exists — skipping creation")
 
     await conn.execute(
-        "GRANT ALL PRIVILEGES ON DATABASE onboarding_ai TO onboarding_user"
+        "GRANT ALL PRIVILEGES ON DATABASE app TO app"
     )
     await conn.close()
 
@@ -79,11 +79,11 @@ async def setup_database(pg_password: str, app_password: str) -> None:
         port=5432,
         user="postgres",
         password=pg_password,
-        database="onboarding_ai",
+        database="app",
     )
     await conn2.execute("CREATE EXTENSION IF NOT EXISTS vector")
     await conn2.execute(
-        "GRANT ALL ON SCHEMA public TO onboarding_user"
+        "GRANT ALL ON SCHEMA public TO app"
     )
     await conn2.close()
     print("   ✅ pgvector extension enabled")
@@ -152,12 +152,12 @@ async def seed_admin(username: str, email: str, password: str) -> None:
                 username=username,
                 email=email,
                 plain_password=password,
-                is_admin=True,
+                is_superuser=True,
             )
             await session.commit()
-            print(f"   ✅ Admin created: {user.username} (id={user.id})")
+            print(f"   ✅ Superuser created: {user.username} (id={user.id})")
         except ConflictError:
-            print(f"   ℹ️  Admin user '{username}' already exists — skipping")
+            print(f"   ℹ️  Superuser '{username}' already exists — skipping")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -165,7 +165,7 @@ async def seed_admin(username: str, email: str, password: str) -> None:
 async def main(pg_password: str, app_password: str,
                admin_username: str, admin_email: str, admin_password: str) -> None:
     print("=" * 55)
-    print("  PostgreSQL setup for Onboarding AI")
+    print("  PostgreSQL setup for Mnema")
     print("=" * 55)
 
     await setup_database(pg_password, app_password)
@@ -176,8 +176,8 @@ async def main(pg_password: str, app_password: str,
     print("\n" + "=" * 55)
     print("  ✅ Setup complete!")
     print("=" * 55)
-    print(f"\n  Database : onboarding_ai")
-    print(f"  DB user  : onboarding_user")
+    print(f"\n  Database : app")
+    print(f"  DB user  : app")
     print(f"  Admin    : {admin_username} / {admin_password}")
     print(f"\n  Start the app:")
     print(f"  uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload")
@@ -185,14 +185,14 @@ async def main(pg_password: str, app_password: str,
 
 
 def cli() -> None:
-    parser = argparse.ArgumentParser(description="Set up PostgreSQL for Onboarding AI")
+    parser = argparse.ArgumentParser(description="Set up PostgreSQL for Mnema")
     parser.add_argument(
         "--pg-password", default="postgres",
         help="Password for the postgres superuser (set during PG installation)"
     )
     parser.add_argument(
-        "--app-password", default="onboarding_pass",
-        help="Password for the onboarding_user DB account (default: onboarding_pass)"
+        "--app-password", default="postgres",
+        help="Password for the 'app' DB account (default: postgres, matching docker-compose)"
     )
     parser.add_argument("--admin-username", default="admin")
     parser.add_argument("--admin-email", default="admin@company.com")

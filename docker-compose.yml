@@ -1,12 +1,12 @@
 # Compose project name is pinned so volume / network / container prefixes
 # stay consistent regardless of the parent folder name on disk.
-name: nexora
+name: mnema
 
 services:
 
   db:
     image: pgvector/pgvector:pg17
-    container_name: nexora_db
+    container_name: mnema_db
     restart: unless-stopped
     environment:
       POSTGRES_USER: app
@@ -23,11 +23,42 @@ services:
       retries: 10
       start_period: 10s
     networks:
-      - nexora_net
+      - mnema_net
+
+  # Web UI for inspecting the database — http://localhost:5050
+  # The "Mnema DB" server is pre-registered via servers.json so it shows up
+  # in the tree automatically; you only enter the DB password ("postgres")
+  # the first time you expand it.
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: mnema_pgadmin
+    restart: unless-stopped
+    # Optional DB inspection GUI — NOT started by default (it ships with
+    # admin/admin and the master password disabled, so it must never run
+    # on a shared/production host). Start it only when you need it:
+    #   docker compose --profile tools up
+    profiles: ["tools"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      # Accept the short default login password and skip the extra
+      # master-password prompt so first login is just email + password.
+      PGADMIN_CONFIG_PASSWORD_LENGTH_MIN: 1
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
+    networks:
+      - mnema_net
 
   ollama:
     image: ollama/ollama:latest
-    container_name: nexora_ollama
+    container_name: mnema_ollama
     restart: unless-stopped
     ports:
       - "11434:11434"
@@ -36,6 +67,17 @@ services:
     environment:
       OLLAMA_HOST: 0.0.0.0:11434
       OLLAMA_KEEP_ALIVE: 24h
+    # GPU acceleration is the default — it's dramatically faster than CPU.
+    # Requires the NVIDIA Container Toolkit on the host.
+    # No NVIDIA GPU? Comment out this whole `deploy:` block to fall back to
+    # CPU (slower, but works on any machine).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     healthcheck:
       # /api/tags is the cheapest endpoint that confirms the daemon is serving HTTP.
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
@@ -44,7 +86,7 @@ services:
       retries: 20
       start_period: 10s
     networks:
-      - nexora_net
+      - mnema_net
 
   # One-shot init container: pulls the configured model once Ollama is healthy,
   # then exits. The app waits for this to complete successfully before booting.
@@ -52,13 +94,13 @@ services:
   # and every /api/chat call returns 404.
   ollama-init:
     image: ollama/ollama:latest
-    container_name: nexora_ollama_init
+    container_name: mnema_ollama_init
     depends_on:
       ollama:
         condition: service_healthy
     environment:
       OLLAMA_HOST: http://ollama:11434
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b}
     entrypoint: >
       sh -c "
         echo '[ollama-init] Pulling model: '$$OLLAMA_MODEL;
@@ -67,11 +109,11 @@ services:
       "
     restart: "no"
     networks:
-      - nexora_net
+      - mnema_net
 
   app:
     build: .
-    container_name: nexora_app
+    container_name: mnema_app
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -105,19 +147,19 @@ services:
       retries: 5
       start_period: 60s
     networks:
-      - nexora_net
+      - mnema_net
 
-# Opt-in GPU support: enable with the gpu overlay file.
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
-# The default profile runs Ollama on CPU so a fresh clone works on any host.
-# (Requires nvidia-container-toolkit on the host.)
+# Ollama runs on the GPU by default (see the `deploy:` block on the ollama
+# service). Requires the NVIDIA Container Toolkit on the host. To run on CPU
+# instead, comment out that block.
 
 networks:
-  nexora_net:
+  mnema_net:
     driver: bridge
 
 volumes:
   postgres_data:
+  pgadmin_data:
   ollama_data:
   uploads_data:
   huggingface_cache:

@@ -28,7 +28,10 @@
         if (navChat)   navChat.style.display   = 'inline-flex';
         if (btnLogout) btnLogout.style.display  = 'inline-flex';
         if (navLogin)  navLogin.style.display   = 'none';
-        if (navAdmin && user.is_admin) navAdmin.style.display = 'inline-flex';
+        // Admin link is reachable by superusers and by any role-admin.
+        const canAdmin = !!user.is_superuser
+          || (Array.isArray(user.memberships) && user.memberships.some(m => m.is_role_admin));
+        if (navAdmin && canAdmin) navAdmin.style.display = 'inline-flex';
     }
 })();
 

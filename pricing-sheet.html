@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mnema — Pricing</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#475569; --line:#e2e8f0;
+    --brand:#4338ca; --brand-soft:#eef2ff; --accent:#0d9488;
+    --win:#0d9488;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);}
+  body{background:#f1f5f9;padding:24px;}
+  .page{
+    width:210mm;min-height:297mm;margin:0 auto;background:#fff;
+    padding:14mm 14mm 10mm;box-shadow:0 4px 24px rgba(0,0,0,.12);
+  }
+  /* Header */
+  .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid var(--brand);padding-bottom:10px;}
+  .brand{font-size:30px;font-weight:800;letter-spacing:-.5px;color:var(--brand);}
+  .brand span{color:var(--ink);}
+  .tag{font-size:11.5px;color:var(--muted);margin-top:2px;font-weight:600;letter-spacing:.3px;text-transform:uppercase;}
+  .head .right{text-align:right;font-size:10.5px;color:var(--muted);line-height:1.5;}
+  .head .right b{color:var(--ink);}
+  /* Value line */
+  .value{background:var(--brand-soft);border-left:4px solid var(--brand);
+    padding:9px 12px;margin:12px 0;font-size:12.5px;line-height:1.45;}
+  .value b{color:var(--brand);}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--brand);
+    margin:14px 0 6px;font-weight:800;}
+  /* Anchor table */
+  table{width:100%;border-collapse:collapse;font-size:11px;}
+  .anchor td{padding:5px 8px;border-bottom:1px solid var(--line);}
+  .anchor tr:first-child td{font-weight:700;color:var(--muted);font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;border-bottom:1.5px solid var(--ink);}
+  .anchor .price{text-align:right;font-weight:700;white-space:nowrap;}
+  .anchor .ours{background:var(--brand-soft);}
+  .anchor .ours td{font-weight:800;color:var(--brand);border-bottom:none;}
+  .anchor .ours .price{color:var(--brand);}
+  /* Tiers */
+  .tiers{width:100%;border-collapse:separate;border-spacing:7px 0;table-layout:fixed;}
+  .tiers td{vertical-align:top;width:25%;}
+  .card{border:1px solid var(--line);border-radius:8px;padding:10px;height:100%;}
+  .card.best{border:2px solid var(--brand);box-shadow:0 2px 8px rgba(67,56,202,.12);}
+  .badge{display:inline-block;background:var(--brand);color:#fff;font-size:8px;font-weight:800;
+    text-transform:uppercase;letter-spacing:.5px;padding:2px 6px;border-radius:10px;margin-bottom:5px;}
+  .tname{font-size:13px;font-weight:800;}
+  .tsize{font-size:9.5px;color:var(--muted);margin:1px 0 7px;font-weight:600;}
+  .tprice{font-size:19px;font-weight:800;color:var(--brand);line-height:1;}
+  .tprice small{font-size:10px;color:var(--muted);font-weight:600;}
+  .tlist{list-style:none;margin-top:8px;font-size:9.7px;line-height:1.5;color:var(--ink);}
+  .tlist li{padding-left:13px;position:relative;margin-bottom:2px;}
+  .tlist li:before{content:"✓";position:absolute;left:0;color:var(--accent);font-weight:800;}
+  /* Two-col block */
+  .cols{display:flex;gap:14px;margin-top:4px;}
+  .col{flex:1;}
+  .mini{width:100%;border-collapse:collapse;font-size:10.3px;}
+  .mini td{padding:4px 0;border-bottom:1px dotted var(--line);vertical-align:top;}
+  .mini td:last-child{text-align:right;font-weight:700;white-space:nowrap;padding-left:8px;}
+  .mini .lbl{color:var(--ink);}
+  .mini .sub{color:var(--muted);font-size:8.8px;display:block;}
+  /* Terms */
+  .terms{margin-top:13px;border-top:1px solid var(--line);padding-top:9px;
+    font-size:9.5px;color:var(--muted);line-height:1.6;}
+  .terms b{color:var(--ink);}
+  .cta{margin-top:11px;background:var(--ink);color:#fff;border-radius:8px;
+    padding:11px 14px;display:flex;justify-content:space-between;align-items:center;}
+  .cta .t{font-size:12.5px;font-weight:700;}
+  .cta .t small{display:block;font-weight:500;color:#cbd5e1;font-size:9.5px;margin-top:1px;}
+  .cta .c{text-align:right;font-size:10.5px;line-height:1.5;}
+  .cta .c b{color:#a5b4fc;}
+  @media print{
+    body{background:#fff;padding:0;}
+    .page{box-shadow:none;margin:0;width:auto;min-height:auto;padding:10mm 12mm;}
+    @page{size:A4;margin:0;}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="head">
+    <div>
+      <div class="brand">Mnema<span>.</span></div>
+      <div class="tag">Private, self-hosted AI knowledge assistant</div>
+    </div>
+    <div class="right">
+      <b>Pricing &amp; Packages</b><br>
+      Valid 2026 · Prices in EUR, excl. VAT<br>
+      Annual license · self-hosted on your infrastructure
+    </div>
+  </div>
+
+  <div class="value">
+    Your company's own AI assistant for onboarding and internal knowledge — answering staff
+    questions from your documents, with <b>role-based access control</b> and
+    <b>zero data ever leaving your servers</b>. No cloud, no per-token bill, no third party
+    reading your files.
+  </div>
+
+  <h2>Why it costs less than the cloud alternatives</h2>
+  <table class="anchor">
+    <tr><td>Option (100-person company)</td><td class="price">Annual cost</td><td>Where your data lives</td></tr>
+    <tr><td>Microsoft 365 Copilot — €30/user/mo</td><td class="price">~€36,000</td><td>Microsoft cloud (US)</td></tr>
+    <tr><td>ChatGPT Enterprise — ~$60/user/mo</td><td class="price">~€55,000</td><td>OpenAI servers (US)</td></tr>
+    <tr><td>Enterprise RAG (Glean &amp; sim.)</td><td class="price">€45,000+</td><td>Vendor cloud</td></tr>
+    <tr class="ours"><td>Mnema — flat company license</td><td class="price">from €9,000</td><td>Your network. Always.</td></tr>
+  </table>
+
+  <h2>Annual license — billed per company, not per seat</h2>
+  <table class="tiers"><tr>
+    <td><div class="card">
+      <div class="tname">Starter</div>
+      <div class="tsize">up to 50 employees</div>
+      <div class="tprice">€3,500<small>/yr</small></div>
+      <ul class="tlist">
+        <li>Full product, 1 model</li>
+        <li>Up to ~5,000 documents</li>
+        <li>Role-based access</li>
+        <li>Email support (2 bus. days)</li>
+      </ul>
+    </div></td>
+    <td><div class="card best">
+      <div class="badge">Most popular</div>
+      <div class="tname">Growth</div>
+      <div class="tsize">50–150 employees</div>
+      <div class="tprice">€9,000<small>/yr</small></div>
+      <ul class="tlist">
+        <li>Everything in Starter</li>
+        <li>Unlimited documents</li>
+        <li>Advanced reranking</li>
+        <li>Conversation analytics</li>
+        <li>Priority support (1 bus. day)</li>
+      </ul>
+    </div></td>
+    <td><div class="card">
+      <div class="tname">Scale</div>
+      <div class="tsize">150–300 employees</div>
+      <div class="tprice">€18,000<small>/yr</small></div>
+      <ul class="tlist">
+        <li>Everything in Growth</li>
+        <li>SSO / LDAP integration</li>
+        <li>Custom role schema</li>
+        <li>Quarterly tuning</li>
+        <li>Named contact</li>
+      </ul>
+    </div></td>
+    <td><div class="card">
+      <div class="tname">Enterprise</div>
+      <div class="tsize">300+ / regulated</div>
+      <div class="tprice">Custom<small> from €30k</small></div>
+      <ul class="tlist">
+        <li>Everything in Scale</li>
+        <li>Contractual SLA</li>
+        <li>Security-review support</li>
+        <li>On-prem hardening</li>
+        <li>Dedicated onboarding</li>
+      </ul>
+    </div></td>
+  </tr></table>
+
+  <div class="cols">
+    <div class="col">
+      <h2>One-time setup &amp; onboarding</h2>
+      <table class="mini">
+        <tr><td class="lbl">Standard <span class="sub">Install, ingestion, role config, 2 training sessions, go-live</span></td><td>€2,500</td></tr>
+        <tr><td class="lbl">Advanced <span class="sub">+ SSO/LDAP, custom prompts, data-source mapping, admin training</span></td><td>€5,000</td></tr>
+        <tr><td class="lbl">Enterprise <span class="sub">Scoped — security review, GPU sizing, staged rollout</span></td><td>€8k–15k</td></tr>
+      </table>
+    </div>
+    <div class="col">
+      <h2>Optional add-ons</h2>
+      <table class="mini">
+        <tr><td class="lbl">Premium support SLA <span class="sub">4-hr response, phone, per year</span></td><td>€3k–6k</td></tr>
+        <tr><td class="lbl">Custom integration <span class="sub">SharePoint, Confluence, HR — per connector</span></td><td>€1.5k–4k</td></tr>
+        <tr><td class="lbl">Additional language / tuning</td><td>€1.5k–3k</td></tr>
+        <tr><td class="lbl">On-site training / workshop <span class="sub">per day + expenses</span></td><td>€500–800</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="terms">
+    <b>Terms.</b> All prices in EUR, excluding 24% Greek VAT (ΦΠΑ); intra-EU B2B reverse-charge applies.
+    Annual license billed in advance. <b>Multi-year:</b> 2 years −10%, 3 years −15%.
+    Runs entirely on the customer's own servers (CPU or NVIDIA GPU); customer provides infrastructure.
+    Quote valid 30 days from issue. Setup begins on receipt of signed order and setup fee.
+  </div>
+
+  <div class="cta">
+    <div class="t">Ready for a private demo on your own documents?<small>Book a 30-minute walkthrough — see Mnema answer from your real content.</small></div>
+    <div class="c"><b>Mnema</b><br>levanmamoulatze@gmail.com<br>mnema.example · Athens, Greece</div>
+  </div>
+
+</div>
+</body>
+</html>

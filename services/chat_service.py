@@ -5,30 +5,19 @@ from collections.abc import AsyncGenerator, Coroutine
 from typing import Any
 
 from db.models import User
-from db.repositories.conversation_repository import (
-    ConversationRepository,
-    LearningProgressRepository,
-)
+from db.repositories.conversation_repository import ConversationRepository
 from db.session import AsyncSessionLocal
-from services import progress_service
+from services import title_service
 
-# NOTE: `rag.retriever` and `rag.pipeline` pull in sentence_transformers
-# transitively (~1 GB). They're imported lazily inside `stream_response` so
-# this module stays importable in unit tests without the full ML stack.
+# rag.retriever/pipeline pull in sentence_transformers (~1 GB); imported lazily
+# inside stream_response so this module stays unit-test importable.
 
 logger = logging.getLogger(__name__)
 
 
 # ── Background task registry ─────────────────────────────────────────────────
-#
-# Python only keeps a strong reference to a Task while a caller holds one. A
-# bare `asyncio.create_task(coro)` whose return value is discarded can be
-# garbage-collected mid-flight — see the warning in the asyncio docs:
-#   https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
-#
-# The canonical fix is a module-level set the task adds itself to on schedule
-# and removes itself from on completion. Module-level so its lifetime exceeds
-# any single request that spawned the task.
+# A module-level set holds a strong ref so fire-and-forget tasks aren't
+# garbage-collected mid-flight (asyncio.create_task docs).
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
@@ -38,6 +27,22 @@ def spawn_background_task(coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
     return task
+
+
+def _persona_to_dict(role: Any | None) -> dict | None:
+    """Materialise a Role row's four persona slots into a plain dict.
+
+    Done while the DB session is still open so the prompt builder never
+    touches a detached/expired ORM instance after the session closes.
+    """
+    if role is None:
+        return None
+    return {
+        "persona_name": role.persona_name,
+        "domain_label": role.domain_label,
+        "scope_description": role.scope_description,
+        "general_knowledge_scope": role.general_knowledge_scope,
+    }
 
 
 class ChatService:
@@ -50,9 +55,8 @@ class ChatService:
         user_message: str,
     ) -> AsyncGenerator[str, None]:
 
-        # 1. Save user message + load history.
-        # If this initial step itself fails we can't recover — yield a single
-        # error frame followed by done so the frontend isn't left hanging.
+        # 1. Save user message + load history. On failure, emit one error
+        # frame + done so the frontend isn't left hanging.
         history_dicts: list[dict] = []
         message_count = 0
         try:
@@ -73,36 +77,39 @@ class ChatService:
             yield f"data: {json.dumps({'done': True})}\n\n"
             return
 
-        # 2-5. RAG retrieval, persist reply, optional auto-title, optional
-        # progress tracking. Whatever fails in here, the finally block
-        # guarantees a final 'done' frame so the frontend can release its
-        # UI lock instead of waiting forever.
+        # Retrieve, stream, persist reply, optional auto-title. The finally
+        # block guarantees a final 'done' frame on every path.
         full_response = ""
         try:
             try:
-                # Lazy imports — see module docstring.
                 from rag.pipeline import RAGPipeline
                 from rag.retriever import Retriever
 
                 logger.info(
-                    "chat[conv=%s user=%s role=%s admin=%s]: retrieving",
-                    conversation_id, self.user.id, self.user.role, self.user.is_admin,
+                    "chat[conv=%s user=%s roles=%s superuser=%s]: retrieving",
+                    conversation_id, self.user.id,
+                    self.user.role_ids, self.user.is_superuser,
                 )
                 async with AsyncSessionLocal() as session:
                     retriever = Retriever(
                         session,
-                        user_role=self.user.role,
-                        is_admin=self.user.is_admin,
+                        user_role_ids=self.user.role_ids,
+                        is_superuser=self.user.is_superuser,
                     )
                     rag = RAGPipeline().with_retriever(retriever)
                     chunks = await retriever.retrieve(user_message, top_k=None)
+                    # Resolve persona inside the session block — doing it after
+                    # caused a closed-session query for single-role users.
+                    persona_slots = _persona_to_dict(
+                        await retriever.resolve_persona_role()
+                    )
 
                 logger.info(
                     "chat[conv=%s]: retrieved %d chunks, streaming from LLM",
                     conversation_id, len(chunks),
                 )
                 async for token in rag._stream_from_chunks(
-                    user_message, chunks, history_dicts
+                    user_message, chunks, history_dicts, role=persona_slots
                 ):
                     full_response += token
                     yield f"data: {json.dumps({'token': token})}\n\n"
@@ -121,8 +128,7 @@ class ChatService:
                 yield f"data: {json.dumps({'error': error_msg})}\n\n"
                 full_response = error_msg
 
-            # Save assistant reply (best-effort — if this fails we still
-            # want to emit done so the UI unlocks).
+            # Save assistant reply (best-effort).
             try:
                 async with AsyncSessionLocal() as session:
                     conv_repo = ConversationRepository(session)
@@ -136,54 +142,34 @@ class ChatService:
                     conversation_id,
                 )
 
-            # Auto-name after first full exchange (best-effort).
-            if message_count == 2:
-                try:
-                    title = await progress_service.generate_title(
-                        user_message, full_response
-                    )
-                    if title:
-                        async with AsyncSessionLocal() as session:
-                            conv_repo = ConversationRepository(session)
-                            await conv_repo.update_title(
-                                conversation_id, self.user.id, title
-                            )
-                            await session.commit()
-                        yield f"data: {json.dumps({'title_update': title})}\n\n"
-                except Exception:
-                    logger.exception(
-                        "Auto-title generation failed for conversation %s",
-                        conversation_id,
-                    )
-
-            # Track learning progress (non-admins only).
-            if not self.user.is_admin and full_response and len(full_response) > 50:
+            # Auto-title after the first turn (message_count == 1: only the
+            # user message is saved at sampling time). Spawned as a background
+            # task so the slow Ollama title call doesn't block the 'done' frame.
+            if message_count == 1 and full_response:
                 spawn_background_task(
-                    self._update_progress(user_message, full_response)
+                    self._update_title(conversation_id, user_message, full_response)
                 )
 
         finally:
-            # The single most important frame in the protocol: tells the
-            # frontend to release its UI lock. Must fire on every path.
+            # Always emit done so the frontend releases its UI lock.
             yield f"data: {json.dumps({'done': True})}\n\n"
 
-    async def _update_progress(self, user_message: str, assistant_reply: str) -> None:
-        topics = await progress_service.extract_topics(user_message, assistant_reply)
-        if not topics:
-            return
+    async def _update_title(
+        self,
+        conversation_id: int,
+        user_message: str,
+        assistant_reply: str,
+    ) -> None:
+        """Generate an auto-title and persist it. Never raises."""
         try:
+            title = await title_service.generate_title(user_message, assistant_reply)
+            if not title:
+                return
             async with AsyncSessionLocal() as session:
-                repo = LearningProgressRepository(session)
-                for item in topics:
-                    name = str(item.get("name", "")).strip()
-                    delta = float(item.get("delta", 0))
-                    if name and 0 < delta <= 15:
-                        await repo.upsert_topic(self.user.id, name, delta)
+                conv_repo = ConversationRepository(session)
+                await conv_repo.update_title(conversation_id, self.user.id, title)
                 await session.commit()
         except Exception:
-            # Progress tracking is a nice-to-have; a DB hiccup here must
-            # never propagate. But log it — previously a bare `pass` hid
-            # programming bugs (e.g. attribute errors) too.
             logger.exception(
-                "Failed to update learning progress for user %s", self.user.id
+                "Auto-title generation failed for conversation %s", conversation_id
             )

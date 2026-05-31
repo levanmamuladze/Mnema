@@ -45,38 +45,62 @@ async def wait_for_postgres(max_attempts: int = 30, delay: float = 2.0) -> None:
     sys.exit(1)
 
 
-async def enable_vector_extension() -> None:
-    print("Enabling pgvector extension...", flush=True)
+async def run_migrations() -> None:
+    """
+    Apply Alembic migrations to bring the database up to date.
+
+    Three startup states are handled idempotently:
+
+    1. Fresh database (no tables): `alembic upgrade head` runs the
+       baseline migration, which creates the pgvector extension, every
+       table, and the HNSW index.
+
+    2. Pre-Alembic database (tables exist, no alembic_version row):
+       The schema was created by an older entrypoint via
+       Base.metadata.create_all. We stamp the baseline as applied
+       *without* running it — otherwise the migration would try to
+       CREATE TABLE on tables that already exist. After stamping, any
+       subsequent migrations layered on top of baseline still run.
+
+    3. Alembic-managed database: just upgrade head, which is a no-op
+       when already at the latest revision.
+
+    Running this synchronously inside the otherwise-async entrypoint is
+    fine — Alembic owns its own DB connections via the URL in
+    alembic/env.py, separate from the asyncpg pool the app uses.
+    """
+    print("Applying database migrations...", flush=True)
+
     conn = await _plain_connect()
     try:
-        await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        print("  [ok] pgvector extension enabled", flush=True)
+        alembic_managed = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = current_schema() "
+            "AND table_name = 'alembic_version')"
+        )
+        users_exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = current_schema() "
+            "AND table_name = 'users')"
+        )
     finally:
         await conn.close()
 
+    from alembic import command
+    from alembic.config import Config
 
-async def create_tables() -> None:
-    print("Creating/verifying tables...", flush=True)
-    from db.session import init_db
-    await init_db()
-    print("  [ok] Tables ready", flush=True)
+    cfg = Config(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "alembic.ini"))
 
+    if not alembic_managed and users_exists:
+        print("  [info] Pre-Alembic database detected; stamping baseline",
+              flush=True)
+        command.stamp(cfg, "head")
+        print("  [ok] Baseline stamped", flush=True)
+        return
 
-async def create_vector_index() -> None:
-    print("Creating HNSW vector index...", flush=True)
-    from pgvector.asyncpg import register_vector
-    conn = await _plain_connect()
-    try:
-        await register_vector(conn)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
-            ON document_chunks
-            USING hnsw (embedding vector_cosine_ops)
-            WITH (m = 16, ef_construction = 64)
-        """)
-        print("  [ok] HNSW index ready", flush=True)
-    finally:
-        await conn.close()
+    command.upgrade(cfg, "head")
+    print("  [ok] Migrations applied", flush=True)
 
 
 async def wait_for_ollama(max_attempts: int = 60, delay: float = 2.0) -> None:
@@ -127,8 +151,15 @@ async def wait_for_ollama(max_attempts: int = 60, delay: float = 2.0) -> None:
     )
 
 
+# Passwords that ship in templates / docs / first-run examples.  We refuse
+# to seed any of these when DEBUG=false so a forgotten config can't bring
+# up a publicly reachable admin with a guessable password.
+_WEAK_ADMIN_PASSWORDS = {"Admin123!", "ChangeMe123!", "Password1", "admin", ""}
+
+
 async def seed_admin() -> None:
-    print("Seeding admin user...", flush=True)
+    print("Seeding superuser...", flush=True)
+    from core.config import settings
     from core.exceptions import ConflictError
     from db.repositories.user_repository import UserRepository
     from db.session import AsyncSessionLocal
@@ -137,27 +168,105 @@ async def seed_admin() -> None:
     email    = os.getenv("ADMIN_EMAIL",    "admin@company.com")
     password = os.getenv("ADMIN_PASSWORD", "Admin123!")
 
+    # Fail-closed in production: refuse to seed a known-weak default.
+    # In DEBUG mode we warn and continue so local dev/demo still works.
+    if password in _WEAK_ADMIN_PASSWORDS:
+        msg = (
+            "ADMIN_PASSWORD is unset or matches a known-weak default. "
+            "Set a strong ADMIN_PASSWORD in the environment before "
+            "starting the container."
+        )
+        if not settings.DEBUG:
+            print(f"  [fatal] {msg}", flush=True)
+            sys.exit(1)
+        print(f"  [warn] {msg}  (DEBUG=true — seeding anyway)", flush=True)
+
     async with AsyncSessionLocal() as session:
         repo = UserRepository(session)
         try:
-            user = await repo.create_user(username=username, email=email,
-                                          plain_password=password, is_admin=True)
+            user = await repo.create_user(
+                username=username,
+                email=email,
+                plain_password=password,
+                is_superuser=True,
+                role_assignments=None,
+            )
             await session.commit()
-            print(f"  [ok] Admin created: {user.username}", flush=True)
+            print(f"  [ok] Superuser created: {user.username}", flush=True)
         except ConflictError:
-            print(f"  [skip] Admin '{username}' already exists", flush=True)
+            print(f"  [skip] Superuser '{username}' already exists", flush=True)
+
+
+# Starter roles seeded only on fresh installs so a brand-new deployment
+# has something to play with out-of-the-box. On upgrades from the pre-
+# Alembic schema, the 0002 migration already created roles for whatever
+# legacy values were in users.role / document_roles.role, so we skip
+# seeding if any rows already exist.
+_STARTER_ROLES = [
+    {
+        "name": "hr",
+        "display_name": "HR",
+        "persona_name": "Morgan",
+        "domain_label": "HR",
+        "scope_description": (
+            "HR policies, onboarding, benefits, payroll, leave, compliance, "
+            "employee relations, and other HR documentation."
+        ),
+        "general_knowledge_scope": (
+            "HR concepts, people management, employment law basics, "
+            "onboarding best practices, workplace culture, and team dynamics."
+        ),
+    },
+    {
+        "name": "developer",
+        "display_name": "Engineering",
+        "persona_name": "Dev",
+        "domain_label": "Engineering",
+        "scope_description": (
+            "codebases, repositories, development workflows, architecture, "
+            "tooling, deployments, and engineering practices."
+        ),
+        "general_knowledge_scope": (
+            "software engineering, programming languages, system design, "
+            "DevOps, databases, testing, security, and APIs."
+        ),
+    },
+]
+
+
+async def seed_starter_roles() -> None:
+    print("Seeding starter roles...", flush=True)
+    from db.repositories.role_repository import RoleRepository
+    from db.session import AsyncSessionLocal
+    from sqlalchemy import select, func as sqlfunc
+    from db.models import Role
+
+    async with AsyncSessionLocal() as session:
+        existing = await session.execute(select(sqlfunc.count()).select_from(Role))
+        if existing.scalar_one() > 0:
+            print("  [skip] roles table already populated", flush=True)
+            return
+
+        repo = RoleRepository(session)
+        for spec in _STARTER_ROLES:
+            await repo.create_role(**spec)
+        await session.commit()
+        print(
+            f"  [ok] Created {len(_STARTER_ROLES)} starter role(s): "
+            f"{', '.join(r['name'] for r in _STARTER_ROLES)}",
+            flush=True,
+        )
 
 
 async def main() -> None:
     print("\n========================================", flush=True)
-    print("  Nexora - Docker startup", flush=True)
+    print("  Mnema - Docker startup", flush=True)
     print("========================================\n", flush=True)
     await wait_for_postgres()
-    await enable_vector_extension()
-    await create_tables()
-    await create_vector_index()
+    await run_migrations()
     await wait_for_ollama()
     await seed_admin()
+    await seed_starter_roles()
     print("\n  [ok] Startup complete - launching app\n", flush=True)
 
 

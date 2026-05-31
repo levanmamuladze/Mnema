@@ -11,18 +11,15 @@ from rag.retriever import Retriever
 logger = logging.getLogger(__name__)
 
 
-# A 7B model can need 30–120 s to load into memory on the first /api/chat
-# call after Ollama starts. The previous single 120 s value applied to every
-# phase (connect / read / write / pool), and the read budget was burned
-# during model load — the first token never arrived in time, the stream
-# errored, and the user saw nothing. Read budget here is per-event, so it
-# only triggers when Ollama stops sending tokens, not over total runtime.
+# read is per-event (fires only if Ollama stalls between tokens), so the
+# generous budget covers a cold model load without killing a slow stream.
 _OLLAMA_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=10.0)
 
 
 class RAGPipeline:
     """
-    Stateless RAG pipeline. Inject a Retriever before calling query().
+    Stateless RAG pipeline. Inject a Retriever via with_retriever(), then
+    call _stream_from_chunks() with pre-retrieved chunks.
     One instance per request — do not share across requests.
     """
 
@@ -33,38 +30,28 @@ class RAGPipeline:
         self._retriever = retriever
         return self
 
-    async def query(
-        self,
-        query: str,
-        history: list[dict],
-    ) -> AsyncGenerator[str, None]:
-        if self._retriever is None:
-            raise RuntimeError(
-                "RAGPipeline requires a retriever. Call .with_retriever(retriever) first."
-            )
-        chunks = await self._retriever.retrieve(query, top_k=settings.TOP_K_RETRIEVAL)
-        async for token in self._stream_from_chunks(query, chunks, history):
-            yield token
-
     async def _stream_from_chunks(
         self,
         query: str,
         chunks: list[dict],
         history: list[dict],
+        role: dict | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         Build prompt from pre-retrieved chunks and stream from Ollama.
         Called directly by ChatService so retrieval and streaming can use
         separate DB session lifecycles.
+
+        `role` is the resolved persona — a plain dict of the four persona
+        slots, or None for the generic persona. It MUST be resolved by the
+        caller while the DB session is still open; resolving it here used
+        to run a query on an already-closed session for single-role users.
         """
-        effective_role = None if (self._retriever and self._retriever.is_admin) else (
-            self._retriever.user_role if self._retriever else None
-        )
         messages = build_prompt(
             query=query,
             retrieved_chunks=chunks,
             history=history,
-            user_role=effective_role,
+            role=role,
         )
         async for token in self._stream_ollama(messages):
             yield token
@@ -78,7 +65,7 @@ class RAGPipeline:
             "model": settings.OLLAMA_MODEL,
             "messages": messages,
             "stream": True,
-            "options": {"temperature": 0.3},
+            "options": {"temperature": 0.6},
         }
         logger.info(
             "Streaming from Ollama: url=%s model=%s messages=%d",
@@ -89,8 +76,6 @@ class RAGPipeline:
             async with httpx.AsyncClient(timeout=_OLLAMA_TIMEOUT) as client:
                 async with client.stream("POST", url, json=payload) as response:
                     if response.status_code >= 400:
-                        # Read the body so the error log shows what Ollama
-                        # actually complained about (e.g. "model not found").
                         body = await response.aread()
                         text = body.decode("utf-8", errors="replace")[:500]
                         logger.error(

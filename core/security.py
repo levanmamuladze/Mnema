@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -11,11 +12,8 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 # ── Typed token errors ────────────────────────────────────────────────────────
-#
-# The existing `decode_*_token` helpers return None on any failure, which makes
-# it impossible for callers to distinguish "expired, please refresh" from
-# "tampered, log out". These two subclasses give callers that distinction
-# without breaking the older Optional[dict] contract.
+# decode_*_token return None on any failure; these subclasses let callers
+# distinguish "expired, please refresh" from "tampered, log out".
 
 class TokenError(Exception):
     """Base class for JWT decode failures."""
@@ -51,16 +49,20 @@ def _create_token(data: dict[str, Any], expires_delta: timedelta) -> str:
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def create_access_token(user_id: int, is_admin: bool) -> str:
+def create_access_token(user_id: int, is_superuser: bool) -> str:
+    # is_superuser is informational only — every privileged endpoint re-reads
+    # the User row, so this claim can't escalate. Used for client-side UI gating.
     return _create_token(
-        data={"sub": str(user_id), "is_admin": is_admin, "type": "access"},
+        data={"sub": str(user_id), "is_superuser": is_superuser, "type": "access"},
         expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
     )
 
 
 def create_refresh_token(user_id: int) -> str:
+    # Unique jti per token enables individual revocation: the refresh flow
+    # rotates tokens and denylists consumed jtis (logout + reuse detection).
     return _create_token(
-        data={"sub": str(user_id), "type": "refresh"},
+        data={"sub": str(user_id), "type": "refresh", "jti": uuid.uuid4().hex},
         expires_delta=timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
     )
 

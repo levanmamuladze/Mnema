@@ -30,6 +30,3 @@ httpx==0.27.0
 
 # Rate limiting
 slowapi==0.1.9
-
-# Network share access (SMB/CIFS) — only used by folder-upload endpoint
-smbprotocol==1.13.0

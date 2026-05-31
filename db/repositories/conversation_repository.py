@@ -1,8 +1,8 @@
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from db.models import Conversation, LearningInsight, LearningProgress, Message
+from db.models import Conversation, Message
 from db.repositories.base import BaseRepository
 
 
@@ -93,67 +93,3 @@ class ConversationRepository(BaseRepository[Conversation]):
         )
         messages = list(result.scalars().all())
         return list(reversed(messages))
-
-
-class LearningInsightRepository(BaseRepository[LearningInsight]):
-    model = LearningInsight
-
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
-
-    async def get_by_user(self, user_id: int) -> list[LearningInsight]:
-        result = await self.session.execute(
-            select(LearningInsight)
-            .where(LearningInsight.user_id == user_id)
-            .order_by(LearningInsight.created_at.desc())
-        )
-        return list(result.scalars().all())
-
-    async def create_insight(
-        self,
-        user_id: int,
-        topic: str,
-        summary: str,
-        source_message_id: int | None = None,
-    ) -> LearningInsight:
-        return await self.create(
-            user_id=user_id,
-            topic=topic,
-            summary=summary,
-            source_message_id=source_message_id,
-        )
-
-
-class LearningProgressRepository(BaseRepository[LearningProgress]):
-    model = LearningProgress
-
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
-
-    async def get_all_for_user(self, user_id: int) -> list[LearningProgress]:
-        result = await self.session.execute(
-            select(LearningProgress)
-            .where(LearningProgress.user_id == user_id)
-            .order_by(LearningProgress.topic)
-        )
-        return list(result.scalars().all())
-
-    async def upsert_topic(self, user_id: int, topic: str, delta: float) -> LearningProgress:
-        """
-        Increment progress for a topic by delta, capped at 100.
-        Creates the row if it doesn't exist.
-        """
-        result = await self.session.execute(
-            select(LearningProgress)
-            .where(LearningProgress.user_id == user_id, LearningProgress.topic == topic)
-        )
-        prog = result.scalar_one_or_none()
-        if prog is None:
-            prog = LearningProgress(user_id=user_id, topic=topic, progress=min(delta, 100.0))
-            self.session.add(prog)
-        else:
-            prog.progress = min(prog.progress + delta, 100.0)
-            self.session.add(prog)
-        await self.session.flush()
-        await self.session.refresh(prog)
-        return prog

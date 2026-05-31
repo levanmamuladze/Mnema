@@ -1,4 +1,4 @@
-# Nexora — Verification & Inspection Guide
+# Mnema — Verification & Inspection Guide
 
 This guide covers three things:
 1. How conversations are saved and labeled
@@ -21,21 +21,23 @@ The `updated_at` column is bumped on every turn so the sidebar always shows
 the most recently active conversation at the top.
 
 ### Auto-Labeling
-Conversations are automatically named after the **second full exchange**
-(user message 1 → assistant reply 1 → user message 2). At that point the
-system sends a one-shot prompt to Ollama:
+Conversations are automatically named after the **first full exchange**
+(user message 1 → assistant reply 1). As soon as that first reply finishes
+streaming, the app spawns a background task that sends a one-shot prompt to
+Ollama:
 
 ```
-Generate a short, descriptive title (3-6 words) for this conversation.
+Generate a short, descriptive title (3-6 words) for this conversation based on the first exchange.
 Respond with ONLY the title text, no quotes, no punctuation at the end.
 
 User: <first user message>
 Assistant: <first assistant reply>
 ```
 
-The returned title is stored in `conversations.title` and sent back to the
-browser via a `title_update` SSE event so the sidebar updates instantly
-without a page reload.
+The returned title is normalized (capitalized, trailing punctuation stripped)
+and stored in `conversations.title`. Because titling runs as a fire-and-forget
+background task — not inline — the chat reply is never blocked waiting on it.
+The sidebar picks up the new title on its next refresh.
 
 If Ollama is slow or returns garbage, the conversation stays as
 "New conversation" — it never crashes or blocks the chat.
@@ -49,29 +51,49 @@ If Ollama is slow or returns garbage, the conversation stays as
 PDF / TXT file
     ↓ DocumentLoader      — extracts raw text (PyMuPDF for PDF, utf-8 for TXT)
     ↓ TextChunker         — splits into ~512 char chunks with 64 char overlap
-    ↓ Embedder            — runs all-MiniLM-L6-v2 (384-dim vectors) on each chunk
-    ↓ DocumentChunkRepository.create_chunk()
-    ↓ PostgreSQL: document_chunks table (content TEXT + embedding VECTOR(384))
+    ↓ Embedder            — runs BAAI/bge-base-en-v1.5 (768-dim vectors) on each chunk
+    ↓ DocumentChunkRepository (bulk insert — one flush per document)
+    ↓ PostgreSQL: document_chunks table (content TEXT + embedding VECTOR(768))
     ↓ documents.is_indexed = True
 ```
 
-### Role-Based Access
-When a document is uploaded, admin assigns it to one or more roles
-(`hr`, `developer`). This creates rows in `document_roles`.
+The embedding model and its dimension are configured in `.env`
+(`EMBED_MODEL` / `EMBED_DIMENSION`) and **must** match — 768 for
+`BAAI/bge-base-en-v1.5`, 384 for `all-MiniLM-L6-v2`. The `document_chunks.embedding`
+column type is fixed at table-creation time, so changing the model later
+requires a migration that recreates the column.
 
-At query time the retriever does:
+### Role-Based Access
+Roles are dynamic. A superuser creates roles (e.g. `hr`, `developer`) in the
+Admin panel; each role carries a persona (`persona_name`, `domain_label`,
+`scope_description`, `general_knowledge_scope`). Fresh installs are seeded with
+two starter roles, `hr` and `developer`.
+
+- **Users ↔ roles** is many-to-many via the `user_roles` table. A membership
+  can optionally carry `is_role_admin = true`, which grants admin rights inside
+  that one role only (manage its members, its documents, and its persona).
+- **Documents ↔ roles** is many-to-many via `document_roles`, keyed by
+  `role_id` (a real FK to `roles`, not a string).
+
+At query time the retriever pulls candidate chunks restricted to documents
+tagged with at least one of the user's roles:
 ```sql
-SELECT dc.*, dc.embedding <=> $query_vec AS distance
+SELECT dc.content, dc.embedding <=> :query_vec AS distance
 FROM document_chunks dc
-JOIN documents d ON d.id = dc.document_id
-JOIN document_roles dr ON dr.document_id = d.id
-WHERE dr.role = $user_role           -- enforced at SQL level
+WHERE dc.document_id IN (
+        SELECT dr.document_id
+        FROM document_roles dr
+        WHERE dr.role_id IN (:user_role_ids)   -- the user's role memberships
+      )
   AND dc.embedding IS NOT NULL
 ORDER BY distance
-LIMIT 5
+LIMIT 20;            -- candidate pool, then reranked down to TOP_K_RETRIEVAL (5)
 ```
 
-Admins bypass this filter and see all chunks from all documents.
+Superusers bypass this filter and see all chunks from all documents.
+When reranking is enabled (`RERANKER_ENABLED=true`), the candidate pool is
+re-scored by a cross-encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2`) and
+trimmed to the final top-K.
 
 ### Verifying a document was indexed
 After uploading, the Admin panel shows **Indexed: Yes** in the document table.
@@ -89,6 +111,12 @@ the stack:
 docker compose up -d
 ```
 
+To start just the database and pgAdmin (no app/Ollama), run:
+
+```powershell
+docker compose up -d db pgadmin
+```
+
 Open your browser and go to: **http://localhost:5050**
 
 ### Step 2 — Login
@@ -97,30 +125,43 @@ Open your browser and go to: **http://localhost:5050**
 | Email    | admin@admin.com  |
 | Password | admin            |
 
-### Step 3 — Register the database server
-1. In the left panel, right-click **Servers** → **Register → Server…**
-2. Fill in the **General** tab:
-   - Name: `Onboarding DB`
-3. Click the **Connection** tab and fill in:
+(These are set in docker-compose.yml via `PGADMIN_DEFAULT_EMAIL` /
+`PGADMIN_DEFAULT_PASSWORD`. The short password and the master-password prompt
+are intentionally relaxed there for local use.)
 
-| Field            | Value      |
-|------------------|------------|
-| Host             | `db`       |
-| Port             | `5432`     |
-| Maintenance DB   | `app`      |
-| Username         | `app`      |
-| Password         | `postgres` |
+### Step 3 — Open the pre-registered server
+A server named **Mnema DB** is pre-registered automatically (via
+`pgadmin/servers.json`), so you don't need to add it by hand. In the left
+panel, expand:
 
-4. Click **Save**
+`Servers → Mnema DB`
 
-The server will appear in the left panel. Expand:
-`Onboarding DB → Databases → app → Schemas → public → Tables`
+The first time you expand it, pgAdmin asks for the database password. Enter:
 
-You will see all 7 tables listed below.
+| Field    | Value      |
+|----------|------------|
+| Password | `postgres` |
+
+Tick **Save Password** so you aren't asked again, then continue expanding:
+`Mnema DB → Databases → app → Schemas → public → Tables`
+
+You will see all 10 application tables listed below (plus `alembic_version`,
+which Alembic uses to track the current migration revision).
+
+> **If "Mnema DB" is missing** (e.g. you have an old `pgadmin_data` volume),
+> register it manually: right-click **Servers → Register → Server…**, then on
+> the **Connection** tab use Host `db`, Port `5432`, Maintenance DB `app`,
+> Username `app`, Password `postgres`. (`db` is the Docker Compose service
+> name — pgAdmin reaches Postgres over the internal `mnema_net` network, not
+> via `localhost`.)
 
 ---
 
 ## 4. Table-by-Table Inspection
+
+The core application tables are:
+`users`, `roles`, `user_roles`, `documents`, `document_roles`,
+`document_chunks`, `conversations`, `messages`, `revoked_tokens`.
 
 For each table, right-click it → **View/Edit Data → All Rows** to see the data.
 Or open the **Query Tool** (Tools menu) and paste the SQL below.
@@ -130,15 +171,54 @@ Or open the **Query Tool** (Tools menu) and paste the SQL below.
 ### `users` — All registered accounts
 
 ```sql
-SELECT id, username, email, role, is_admin, is_active, created_at
+SELECT id, username, email, is_superuser, is_active, created_at
 FROM users
 ORDER BY created_at DESC;
 ```
 
 **What to check:**
-- Admin user exists with `is_admin = true` and `role = 'admin'`
-- HR/developer users have correct roles
+- The seeded admin exists with `is_superuser = true`
+- `is_active = true` for accounts that should be able to log in
 - No duplicate usernames or emails
+
+> Note: there is no `role` or `is_admin` column anymore. Roles live in
+> `user_roles` (see below); the old global `is_admin` is now `is_superuser`.
+
+---
+
+### `roles` — Defined teams / access tiers
+
+```sql
+SELECT id, name, display_name, persona_name, domain_label, created_at
+FROM roles
+ORDER BY id;
+```
+
+**What to check:**
+- Fresh installs have the `hr` and `developer` starter roles
+- Each role has a non-empty persona (`persona_name`, `domain_label`,
+  `scope_description`, `general_knowledge_scope`)
+
+---
+
+### `user_roles` — Which users belong to which roles
+
+```sql
+SELECT
+    u.username,
+    r.name        AS role,
+    ur.is_role_admin,
+    ur.created_at
+FROM user_roles ur
+JOIN users u ON u.id = ur.user_id
+JOIN roles r ON r.id = ur.role_id
+ORDER BY u.username, r.name;
+```
+
+**What to check:**
+- Every non-superuser has at least one role (otherwise they retrieve nothing)
+- `is_role_admin = true` only where someone should manage that specific role
+- Superusers may have no rows here at all — they bypass roles entirely
 
 ---
 
@@ -160,7 +240,7 @@ ORDER BY c.updated_at DESC;
 ```
 
 **What to check:**
-- `title` is populated after the second exchange (auto-named by AI)
+- `title` is populated after the first exchange (auto-named by AI)
 - `updated_at` changes every time a new message is sent
 - `message_count` grows correctly
 
@@ -218,15 +298,16 @@ ORDER BY d.uploaded_at DESC;
 ```sql
 SELECT
     d.original_filename,
-    dr.role
+    r.name AS role
 FROM document_roles dr
 JOIN documents d ON d.id = dr.document_id
+JOIN roles    r ON r.id = dr.role_id
 ORDER BY d.id;
 ```
 
 **What to check:**
-- Each document has at least one role assigned
-- Roles are either `hr` or `developer`
+- Each document has at least one role assigned (otherwise only superusers see it)
+- Roles resolve to real rows in `roles` (the join returns a name, not null)
 
 ---
 
@@ -258,28 +339,9 @@ ORDER BY d.id;
 
 **What to check:**
 - `embedded_count` equals `chunk_count` for every document
+- Each `embedding` is a 768-dim vector (matches `EMBED_DIMENSION`)
 - If `embedded_count = 0` the document was not indexed — re-upload it
 - Typical chunk count: 5–50 per page of text
-
----
-
-### `learning_progress` — Per-user topic tracking
-
-```sql
-SELECT
-    u.username,
-    lp.topic,
-    ROUND(lp.progress::numeric, 1) AS progress_pct,
-    lp.updated_at
-FROM learning_progress lp
-JOIN users u ON u.id = lp.user_id
-ORDER BY u.username, lp.progress DESC;
-```
-
-**What to check:**
-- Progress increases after chat sessions
-- Topics match the content of uploaded documents
-- Values stay between 0 and 100
 
 ---
 
@@ -289,15 +351,16 @@ Run this single query to get a full system snapshot:
 
 ```sql
 SELECT
-    (SELECT COUNT(*) FROM users)              AS total_users,
-    (SELECT COUNT(*) FROM users WHERE is_admin) AS admins,
-    (SELECT COUNT(*) FROM documents)          AS total_documents,
-    (SELECT COUNT(*) FROM documents WHERE is_indexed) AS indexed_documents,
-    (SELECT COUNT(*) FROM document_chunks)    AS total_chunks,
+    (SELECT COUNT(*) FROM users)                          AS total_users,
+    (SELECT COUNT(*) FROM users WHERE is_superuser)       AS superusers,
+    (SELECT COUNT(*) FROM roles)                          AS total_roles,
+    (SELECT COUNT(*) FROM user_roles)                     AS role_memberships,
+    (SELECT COUNT(*) FROM documents)                      AS total_documents,
+    (SELECT COUNT(*) FROM documents WHERE is_indexed)     AS indexed_documents,
+    (SELECT COUNT(*) FROM document_chunks)                AS total_chunks,
     (SELECT COUNT(*) FROM document_chunks WHERE embedding IS NOT NULL) AS embedded_chunks,
-    (SELECT COUNT(*) FROM conversations)      AS total_conversations,
-    (SELECT COUNT(*) FROM messages)           AS total_messages,
-    (SELECT COUNT(*) FROM learning_progress)  AS progress_records;
+    (SELECT COUNT(*) FROM conversations)                  AS total_conversations,
+    (SELECT COUNT(*) FROM messages)                       AS total_messages;
 ```
 
 A healthy system shows `total_chunks = embedded_chunks` and
@@ -311,7 +374,9 @@ A healthy system shows `total_chunks = embedded_chunks` and
 1. Check `documents.is_indexed = true` in pgAdmin
 2. Check `embedded_count = chunk_count` in the chunks query above
 3. If chunks exist but embedding_status is MISSING, re-upload the document
-4. If you are admin, confirm `is_admin = true` in the users table
+4. Confirm the document is tagged with a role the user belongs to
+   (`document_roles` joined to the user's `user_roles`), or log in as a superuser
+5. If you are the admin, confirm `is_superuser = true` in the users table
 
 ### Conversations not showing in sidebar
 1. Check `conversations` table — is the row there?
@@ -319,9 +384,17 @@ A healthy system shows `total_chunks = embedded_chunks` and
 3. Try `docker compose restart app` to clear any cached state
 
 ### Title stuck as "New conversation"
-1. The auto-naming triggers after the **2nd exchange** (4 messages total)
-2. Check Ollama is running: `docker exec -it ollama ollama list`
+1. The auto-naming triggers after the **1st exchange** (first user message +
+   first assistant reply) and runs as a background task — give the sidebar a
+   moment to refresh
+2. Check Ollama is running: `docker exec -it mnema_ollama ollama list`
 3. If Ollama is slow, the title just stays as-is — it never blocks chat
+
+### Can't reach pgAdmin / can't connect to the database
+1. Confirm both containers are healthy: `docker compose ps`
+2. pgAdmin is at **http://localhost:5050** (the host port), but inside pgAdmin
+   the database Host is `db` (the service name), **not** `localhost`
+3. The DB credentials are user `app` / password `postgres` / database `app`
 
 ---
 

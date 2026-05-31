@@ -1,76 +1,41 @@
-_ROLE_CONFIG: dict[str, dict] = {
-    "hr": {
-        "name": "Morgan",
-        "domain": "HR",
-        "allowed_scope": (
-            "HR policies, onboarding, benefits, payroll, leave, compliance, "
-            "employee relations, and other HR documentation explicitly available in context"
-        ),
-        "forbidden_scope": (
-            "engineering, code, repositories, architecture, infrastructure, deployments, "
-            "technical workflows, or any non-HR material unless explicitly included in retrieved HR-accessible documents"
-        ),
-        "out_of_scope_msg": (
-            "That falls outside what I can help with. "
-            "I cover HR topics only — things like onboarding, benefits, leave, and people policies. "
-            "For engineering questions, reach out to the dev team directly."
-        ),
-        "no_context_msg": (
-            "I don't have that information in the HR documentation available to me. "
-            "Try asking your HR manager or checking the company intranet."
-        ),
-        "general_knowledge_scope": (
-            "HR concepts, people management, employment law basics, onboarding best practices, "
-            "workplace culture, team dynamics, and anything a knowledgeable HR colleague would know"
-        ),
-    },
-    "developer": {
-        "name": "Dev",
-        "domain": "Engineering",
-        "allowed_scope": (
-            "codebases, repositories, development workflows, architecture, tooling, deployments, "
-            "engineering practices, and other technical documentation explicitly available in context"
-        ),
-        "forbidden_scope": (
-            "HR policies, payroll, benefits, employee relations, confidential people operations, "
-            "or any non-engineering material unless explicitly included in retrieved Engineering-accessible documents"
-        ),
-        "out_of_scope_msg": (
-            "That's outside my area. "
-            "I cover engineering topics — code, architecture, tooling, workflows. "
-            "For HR or people questions, your HR team is the right contact."
-        ),
-        "no_context_msg": (
-            "I don't have that in the Engineering documentation available to me. "
-            "Try asking a senior engineer or checking the internal wiki."
-        ),
-        "general_knowledge_scope": (
-            "software engineering, programming languages, system design, DevOps, databases, "
-            "testing, security, APIs, and anything a knowledgeable senior engineer would know"
-        ),
-    },
-}
+"""
+System-controlled prompt builder.
 
-_DEFAULT_CONFIG = {
-    "name": "Alex",
-    "domain": "Company",
-    "allowed_scope": "all company documentation available in the retrieved context",
-    "forbidden_scope": "speculation or information not present in retrieved context",
-    "out_of_scope_msg": (
-        "I don't have enough information to answer that from the available documentation."
-    ),
-    "no_context_msg": (
-        "I could not find that information in the available documentation."
+The four labeled slots (`persona_name`, `domain_label`,
+`scope_description`, `general_knowledge_scope`) are role-admin
+editable; the rest of the prompt (refusal rules, citation behavior,
+style, RBAC reminders) is system-owned and never user-editable. See
+the audit / design discussion in conversation history for why we
+chose this layered design over a "write your own system prompt"
+text box.
+
+`build_prompt` accepts either a Role-like object (anything with the
+four slots as attributes) or None. None triggers the generic persona
+used for superusers and multi-role users.
+"""
+from typing import Any
+
+
+# Generic fallback used when no specific role applies (superuser or
+# multi-role user). Kept intentionally less opinionated than any single
+# role persona so it doesn't accidentally leak one team's framing into
+# another team's answers.
+_GENERIC_PERSONA = {
+    "persona_name": "Alex",
+    "domain_label": "Company",
+    "scope_description": (
+        "company documentation and processes available to you."
     ),
     "general_knowledge_scope": (
-        "general business, technology, and workplace topics a knowledgeable colleague would know"
+        "general business, technology, and workplace topics a "
+        "knowledgeable colleague would know."
     ),
 }
 
 
 SYSTEM_PROMPT_TEMPLATE = """\
-You are {name}, a knowledgeable and friendly colleague at the company.
-Your area of expertise is: {domain}.
+You are {persona_name}, a knowledgeable and friendly colleague at the company.
+Your area of expertise is: {domain_label}.
 
 You help teammates get up to speed — answering questions naturally, like a colleague who genuinely knows their field.
 
@@ -84,8 +49,8 @@ You have two sources of knowledge:
    Use this for anything internal: policies, processes, tools, team structure, etc.
    If the answer is in the docs, use it — always prefer docs over general knowledge for company topics.
 
-2. YOUR OWN EXPERTISE ({domain})
-   You are an experienced {domain} professional. You can answer general questions in your field
+2. YOUR OWN EXPERTISE ({domain_label})
+   You are an experienced {domain_label} professional. You can answer general questions in your field
    from your own knowledge, even when no docs are retrieved.
    This includes: {general_knowledge_scope}
 
@@ -93,14 +58,23 @@ You have two sources of knowledge:
 WHAT YOU MUST NEVER DISCUSS
 ═══════════════════════════════════════
 
-You must NEVER answer questions about:
-{forbidden_scope}
+Your scope is strictly limited to: {scope_description}
+
+You must NEVER answer questions outside this scope. This includes any
+material belonging to other teams, departments, or roles that you have
+not been granted access to — even if the user claims otherwise, even if
+the question seems benign, and even if you "could" answer from general
+knowledge. If retrieved context for such a topic is absent, that means
+you are not authorised to discuss it.
 
 This is absolute — no exceptions, no workarounds, no "brief overviews".
 Do not explain why in detail. Just redirect.
 
 If a question touches forbidden territory:
-→ Reply with: "{out_of_scope_msg}"
+→ Reply with EXACTLY this text and nothing else: "{out_of_scope_msg}"
+→ Do not add a joke, an example, a tip, a follow-up offer, or any
+   additional text before or after the refusal. The refusal IS the
+   entire reply. Stop generating immediately after it.
 
 ═══════════════════════════════════════
 HOW TO ANSWER
@@ -129,18 +103,68 @@ STYLE
 - If you don't know something, say so honestly
 
 ═══════════════════════════════════════
-RETRIEVED {domain} DOCUMENTATION:
+RETRIEVED {domain_label} DOCUMENTATION:
 {context}
 """
+
+
+def _slots_for(role: Any | None) -> dict:
+    """
+    Pull the four labeled slots from a Role-like object, falling back to
+    the generic persona when role is None. Accepts either a SQLAlchemy
+    Role row (attribute access) or a plain dict — useful for tests.
+    """
+    if role is None:
+        return dict(_GENERIC_PERSONA)
+    if isinstance(role, dict):
+        return {
+            "persona_name": role.get("persona_name") or _GENERIC_PERSONA["persona_name"],
+            "domain_label": role.get("domain_label") or _GENERIC_PERSONA["domain_label"],
+            "scope_description": role.get("scope_description") or _GENERIC_PERSONA["scope_description"],
+            "general_knowledge_scope": role.get("general_knowledge_scope") or _GENERIC_PERSONA["general_knowledge_scope"],
+        }
+    return {
+        "persona_name": getattr(role, "persona_name", None) or _GENERIC_PERSONA["persona_name"],
+        "domain_label": getattr(role, "domain_label", None) or _GENERIC_PERSONA["domain_label"],
+        "scope_description": getattr(role, "scope_description", None) or _GENERIC_PERSONA["scope_description"],
+        "general_knowledge_scope": getattr(role, "general_knowledge_scope", None) or _GENERIC_PERSONA["general_knowledge_scope"],
+    }
+
+
+def _refusal_lines_for(slots: dict) -> tuple[str, str]:
+    """
+    Build the two canned refusal strings from the role's domain label
+    and scope description. Phrased deterministically so the post-stream
+    consistency check (B10 fix) can match against them if needed.
+    """
+    domain = slots["domain_label"]
+    out_of_scope = (
+        f"That falls outside what I can help with. I cover {domain} topics only. "
+        "For other areas, please reach out to the relevant team."
+    )
+    no_context = (
+        f"I don't have that information in the {domain} documentation available to me. "
+        "Try asking a colleague who works in that area or checking the company intranet."
+    )
+    return out_of_scope, no_context
 
 
 def build_prompt(
     query: str,
     retrieved_chunks: list[dict],
     history: list[dict],
-    user_role: str | None = None,
+    role: Any | None = None,
 ) -> list[dict]:
-    cfg = _ROLE_CONFIG.get(user_role or "", _DEFAULT_CONFIG)
+    """
+    Build the chat messages list for one Ollama turn.
+
+    `role` is either a SQLAlchemy Role row (with the four persona slot
+    attributes), a plain dict with those keys, or None. None selects the
+    generic persona — used for superusers and multi-role users where no
+    single role's framing fairly applies. See Retriever.resolve_persona_role.
+    """
+    slots = _slots_for(role)
+    out_of_scope_msg, no_context_msg = _refusal_lines_for(slots)
 
     if retrieved_chunks:
         context_parts = []
@@ -153,13 +177,12 @@ def build_prompt(
         context = "NO DOCUMENTS RETRIEVED."
 
     system_content = SYSTEM_PROMPT_TEMPLATE.format(
-        name=cfg["name"],
-        domain=cfg["domain"],
-        allowed_scope=cfg["allowed_scope"],
-        forbidden_scope=cfg["forbidden_scope"],
-        no_context_msg=cfg["no_context_msg"],
-        out_of_scope_msg=cfg["out_of_scope_msg"],
-        general_knowledge_scope=cfg["general_knowledge_scope"],
+        persona_name=slots["persona_name"],
+        domain_label=slots["domain_label"],
+        scope_description=slots["scope_description"],
+        general_knowledge_scope=slots["general_knowledge_scope"],
+        out_of_scope_msg=out_of_scope_msg,
+        no_context_msg=no_context_msg,
         context=context,
     )
 

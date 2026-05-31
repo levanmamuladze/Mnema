@@ -6,19 +6,7 @@ actually does so any future change is intentional, not accidental.
 """
 from __future__ import annotations
 
-import pytest
-
 from ingestion.chunker import TextChunker
-
-
-# Known bug: `_split()` only ever splits on `separators[0]` (== "\n\n") and
-# never recurses into the remaining separators. So a long single-paragraph
-# input (no "\n\n") emits one giant chunk regardless of chunk_size.
-# Fix tracked separately — see PR-N "Recursive separator descent in TextChunker".
-CHUNKER_NO_RECURSIVE_SPLIT = pytest.mark.xfail(
-    reason="chunker does not recurse into remaining separators (known bug)",
-    strict=True,
-)
 
 
 def test_empty_input_returns_empty_list():
@@ -33,7 +21,6 @@ def test_short_text_produces_single_chunk():
     assert chunks[0]["content"] == "Hello world."
 
 
-@CHUNKER_NO_RECURSIVE_SPLIT
 def test_long_text_produces_multiple_chunks():
     sentence = "This is a sentence. "
     text = sentence * 200  # ~4000 chars
@@ -41,6 +28,9 @@ def test_long_text_produces_multiple_chunks():
     assert len(chunks) > 1
     # All chunks are non-empty after the strip filter.
     assert all(c["content"].strip() for c in chunks)
+    # Recursive descent must keep every chunk within (roughly) chunk_size —
+    # no single oversized chunk should survive.
+    assert all(len(c["content"]) <= 200 for c in chunks)
 
 
 def test_chunks_preserve_content():
@@ -52,7 +42,6 @@ def test_chunks_preserve_content():
         assert f"token{i}" in joined
 
 
-@CHUNKER_NO_RECURSIVE_SPLIT
 def test_overlap_creates_continuity_between_adjacent_chunks():
     """
     With overlap > 0 we expect adjacent chunks to share at least one token.

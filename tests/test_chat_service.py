@@ -35,22 +35,17 @@ async def test_spawn_background_task_keeps_reference_until_done():
 
     async def work():
         started.set()
-        await asyncio.sleep(0)  # yield
+        await asyncio.sleep(0)
         finished.set()
 
-    # Schedule but don't hold the returned Task ourselves.
     cs.spawn_background_task(work())
 
-    # While running, the task must be in the registry.
     await started.wait()
     assert len(cs._BACKGROUND_TASKS) >= 1
 
-    # After completion, the discard callback must remove it.
     await finished.wait()
-    # Give the loop one tick so the done_callback fires.
     await asyncio.sleep(0)
-    # The task we just spawned is no longer in the set (other tests may have
-    # left tasks in flight, so we check membership not size==0).
+    # Check membership, not size==0 — other tests may leave tasks in flight.
     assert not any(
         t for t in cs._BACKGROUND_TASKS if t.get_coro().__name__ == "work"
     )
@@ -76,11 +71,11 @@ def _fake_session_factory(session: MagicMock):
     return factory
 
 
-def _make_user(*, is_admin: bool = False):
+def _make_user(*, is_superuser: bool = False, role_ids: list[int] | None = None):
     user = MagicMock()
     user.id = 1
-    user.role = "developer"
-    user.is_admin = is_admin
+    user.role_ids = role_ids if role_ids is not None else [1]
+    user.is_superuser = is_superuser
     return user
 
 
@@ -104,9 +99,7 @@ async def test_stream_emits_done_when_user_save_fails(monkeypatch):
     service = cs.ChatService(user=_make_user())
     frames = await _drain(service.stream_response(conversation_id=1, user_message="hi"))
 
-    # Last frame must be the done sentinel.
     assert frames[-1] == f"data: {json.dumps({'done': True})}\n\n"
-    # And there must be a preceding error frame so the user sees something useful.
     assert any('"error"' in f for f in frames[:-1])
 
 
@@ -128,7 +121,7 @@ async def test_stream_emits_done_when_retrieval_fails(monkeypatch):
     monkeypatch.setattr(cs, "AsyncSessionLocal", _fake_session_factory(session))
     monkeypatch.setattr(cs, "ConversationRepository", lambda _s: conv_repo)
 
-    # Make the lazy rag.retriever import explode.
+    # Make the lazy rag import explode.
     import sys
     import types
     bad_retriever = types.ModuleType("rag.retriever")
@@ -141,11 +134,10 @@ async def test_stream_emits_done_when_retrieval_fails(monkeypatch):
     monkeypatch.setitem(sys.modules, "rag.retriever", bad_retriever)
     monkeypatch.setitem(sys.modules, "rag.pipeline", bad_pipeline)
 
-    service = cs.ChatService(user=_make_user(is_admin=True))  # admin: skip progress
+    service = cs.ChatService(user=_make_user(is_superuser=True))
     frames = await _drain(service.stream_response(conversation_id=1, user_message="hi"))
 
     assert frames[-1] == f"data: {json.dumps({'done': True})}\n\n"
-    # Error frame should appear before done.
     assert any('"error"' in f for f in frames[:-1])
 
 
@@ -163,7 +155,6 @@ async def test_stream_emits_done_on_happy_path(monkeypatch):
     monkeypatch.setattr(cs, "AsyncSessionLocal", _fake_session_factory(session))
     monkeypatch.setattr(cs, "ConversationRepository", lambda _s: conv_repo)
 
-    # A retriever that returns no chunks and a pipeline that yields two tokens.
     import sys
     import types
 
@@ -172,11 +163,14 @@ async def test_stream_emits_done_on_happy_path(monkeypatch):
             pass
         async def retrieve(self, *a, **k):
             return []
+        async def resolve_persona_role(self):
+            # Resolved eagerly inside the session block (None = generic persona).
+            return None
 
     class _StubPipeline:
         def with_retriever(self, _r):
             return self
-        async def _stream_from_chunks(self, *a, **k):
+        async def _stream_from_chunks(self, query, chunks, history, role=None):
             for tok in ("hello", " world"):
                 yield tok
 
@@ -187,12 +181,10 @@ async def test_stream_emits_done_on_happy_path(monkeypatch):
     monkeypatch.setitem(sys.modules, "rag.retriever", retr_mod)
     monkeypatch.setitem(sys.modules, "rag.pipeline", pipe_mod)
 
-    service = cs.ChatService(user=_make_user(is_admin=True))
+    service = cs.ChatService(user=_make_user(is_superuser=True))
     frames = await _drain(service.stream_response(conversation_id=1, user_message="hi"))
 
-    # Token frames first, then done.
     assert any('"token"' in f and "hello" in f for f in frames)
     assert any('"token"' in f and "world" in f for f in frames)
     assert frames[-1] == f"data: {json.dumps({'done': True})}\n\n"
-    # No error frame on the happy path.
     assert not any('"error"' in f for f in frames)

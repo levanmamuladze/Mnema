@@ -21,10 +21,10 @@ from core.security import create_refresh_token
 
 
 class _StubUser:
-    def __init__(self, user_id: int = 1, is_active: bool = True, is_admin: bool = False):
+    def __init__(self, user_id: int = 1, is_active: bool = True, is_superuser: bool = False):
         self.id = user_id
         self.is_active = is_active
-        self.is_admin = is_admin
+        self.is_superuser = is_superuser
 
 
 @pytest.fixture
@@ -36,16 +36,13 @@ def app(monkeypatch):
     app = FastAPI()
     app.include_router(auth_router_module.router)
 
-    # Override get_session — the auth router never touches the session
-    # in our test scenarios except via UserRepository, which we mock below.
+    # The router only touches the session via UserRepository, which we mock.
     async def _fake_session():
         yield None
 
     app.dependency_overrides[get_session] = _fake_session
 
-    # Patch UserRepository where the router imports it. Returning an active
-    # user is the happy path; tests that want a missing/inactive user can
-    # override the .get_by_id return value on the captured mock.
+    # Default to an active user (happy path); tests override .get_by_id as needed.
     stub_repo = AsyncMock()
     stub_repo.get_by_id = AsyncMock(return_value=_StubUser())
 
@@ -53,6 +50,15 @@ def app(monkeypatch):
         return stub_repo
 
     monkeypatch.setattr(auth_router_module, "UserRepository", _make_repo)
+
+    # Stub the refresh-token denylist (DB session is None here): nothing is
+    # revoked. Reuse tests override RevokedTokenRepository themselves.
+    stub_denylist = AsyncMock()
+    stub_denylist.is_revoked = AsyncMock(return_value=False)
+    stub_denylist.revoke = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        auth_router_module, "RevokedTokenRepository", lambda _session: stub_denylist
+    )
     return app, stub_repo
 
 
@@ -131,8 +137,26 @@ async def test_refresh_returns_invalid_when_access_token_used(client):
     """An access token presented as a refresh token must be rejected."""
     from core.security import create_access_token
 
-    access = create_access_token(user_id=1, is_admin=False)
+    access = create_access_token(user_id=1, is_superuser=False)
     resp = await client.post("/auth/refresh", cookies={"refresh_token": access})
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid refresh token"
+
+
+async def test_refresh_rejects_reused_token(app, client, monkeypatch):
+    """A refresh token whose jti is already on the denylist (logged out or
+    already rotated) is rejected as a replay."""
+    from api.routers import auth as auth_router_module
+
+    reuse_denylist = AsyncMock()
+    reuse_denylist.is_revoked = AsyncMock(return_value=True)
+    reuse_denylist.revoke = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        auth_router_module, "RevokedTokenRepository", lambda _s: reuse_denylist
+    )
+
+    rt = create_refresh_token(user_id=1)
+    resp = await client.post("/auth/refresh", cookies={"refresh_token": rt})
     assert resp.status_code == 401
     assert resp.json()["detail"] == "Invalid refresh token"
 

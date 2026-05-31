@@ -1,25 +1,20 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user, get_session
+from core.limiter import limiter
 from api.schemas.chat import (
     ConversationCreate,
     ConversationOut,
     ConversationUpdate,
     ConversationWithMessages,
     MessageCreate,
-    ProgressOut,
-    ProgressItem,
 )
-from api.schemas.document import DocumentOut, LearningInsightOut
-from core.exceptions import ForbiddenError, NotFoundError
+from api.schemas.document import DocumentOut
+from core.exceptions import NotFoundError
 from db.models import User
-from db.repositories.conversation_repository import (
-    ConversationRepository,
-    LearningInsightRepository,
-    LearningProgressRepository,
-)
+from db.repositories.conversation_repository import ConversationRepository
 from db.repositories.document_repository import DocumentRepository
 from services.chat_service import ChatService
 
@@ -90,7 +85,9 @@ async def delete_conversation(
 
 
 @router.post("/conversations/{conversation_id}/messages")
+@limiter.limit("30/minute")
 async def send_message(
+    request: Request,
     conversation_id: int,
     body: MessageCreate,
     current_user: User = Depends(get_current_user),
@@ -113,21 +110,7 @@ async def send_message(
     )
 
 
-# ── Progress ──────────────────────────────────────────────────────────────────
-
-@router.get("/progress", response_model=ProgressOut)
-async def get_progress(
-    current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> ProgressOut:
-    repo = LearningProgressRepository(session)
-    items = await repo.get_all_for_user(current_user.id)
-    progress_items = [ProgressItem.model_validate(i) for i in items]
-    overall = (sum(i.progress for i in progress_items) / len(progress_items)) if progress_items else 0.0
-    return ProgressOut(items=progress_items, overall=round(overall, 1))
-
-
-# ── Documents + Insights ──────────────────────────────────────────────────────
+# ── Documents ─────────────────────────────────────────────────────────────────
 
 @router.get("/documents", response_model=list[DocumentOut])
 async def list_my_documents(
@@ -135,18 +118,8 @@ async def list_my_documents(
     session: AsyncSession = Depends(get_session),
 ) -> list[DocumentOut]:
     repo = DocumentRepository(session)
-    if current_user.is_admin:
+    if current_user.is_superuser:
         docs = await repo.get_all_documents()
     else:
-        docs = await repo.get_documents_for_role(current_user.role)
+        docs = await repo.get_documents_for_roles(current_user.role_ids)
     return [DocumentOut.from_orm_with_roles(d) for d in docs]
-
-
-@router.get("/learning-insights", response_model=list[LearningInsightOut])
-async def get_learning_insights(
-    current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> list[LearningInsightOut]:
-    repo = LearningInsightRepository(session)
-    insights = await repo.get_by_user(current_user.id)
-    return [LearningInsightOut.model_validate(i) for i in insights]

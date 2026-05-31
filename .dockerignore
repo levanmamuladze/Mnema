@@ -17,3 +17,12 @@ logs/
 node_modules/
 tests/
 .pytest_cache/
+
+# Not needed at runtime — keep them out of the production image
+backups/
+backups;C/
+tests;C/
+test.py
+*.md
+pricing-sheet.html
+github/

@@ -35,16 +35,3 @@ class MessageOut(BaseModel):
 
 class ConversationWithMessages(ConversationOut):
     messages: list[MessageOut] = []
-
-
-class ProgressItem(BaseModel):
-    model_config = {"from_attributes": True}
-
-    topic: str
-    progress: float
-    updated_at: datetime
-
-
-class ProgressOut(BaseModel):
-    items: list[ProgressItem]
-    overall: float  # weighted average across all topics

@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -13,21 +13,52 @@ class DocumentRepository(BaseRepository[Document]):
         super().__init__(session)
 
     async def get_all_documents(self) -> list[Document]:
-        """Admin view — all documents with role assignments loaded."""
+        """Superuser view — all documents with their role assignments loaded."""
         result = await self.session.execute(
             select(Document)
-            .options(selectinload(Document.allowed_roles))
+            .options(
+                selectinload(Document.role_assignments).selectinload(DocumentRole.role)
+            )
             .order_by(Document.uploaded_at.desc())
         )
         return list(result.scalars().all())
 
-    async def get_documents_for_role(self, user_role: str) -> list[Document]:
-        """User view — only documents this role is authorised to access."""
+    async def get_documents_for_admin_roles(self, admin_role_ids: list[int]) -> list[Document]:
+        """
+        Role-admin document view — return every document that touches at
+        least one of the caller's admin roles. The full role-assignment
+        list is loaded so the UI can show whether a doc is shared with
+        other teams (in which case edit/delete is restricted server-side).
+        """
+        if not admin_role_ids:
+            return []
         result = await self.session.execute(
             select(Document)
             .join(DocumentRole, DocumentRole.document_id == Document.id)
-            .where(DocumentRole.role == user_role)
-            .options(selectinload(Document.allowed_roles))
+            .where(DocumentRole.role_id.in_(admin_role_ids))
+            .options(
+                selectinload(Document.role_assignments).selectinload(DocumentRole.role)
+            )
+            .order_by(Document.uploaded_at.desc())
+        )
+        return list(result.scalars().unique().all())
+
+    async def get_documents_for_roles(self, role_ids: list[int]) -> list[Document]:
+        """
+        Return every document where at least one of the document's role
+        assignments matches one of the user's role IDs. With an empty
+        list this returns no rows (intentional fail-closed for users
+        with no role memberships).
+        """
+        if not role_ids:
+            return []
+        result = await self.session.execute(
+            select(Document)
+            .join(DocumentRole, DocumentRole.document_id == Document.id)
+            .where(DocumentRole.role_id.in_(role_ids))
+            .options(
+                selectinload(Document.role_assignments).selectinload(DocumentRole.role)
+            )
             .order_by(Document.uploaded_at.desc())
         )
         return list(result.scalars().unique().all())
@@ -49,6 +80,22 @@ class DocumentRepository(BaseRepository[Document]):
             mime_type=mime_type,
             uploaded_by_admin=uploaded_by_admin,
         )
+
+    async def reassign_uploader(self, from_user_id: int, to_user_id: int) -> int:
+        """
+        Transfer ownership of every document uploaded by `from_user_id` to
+        `to_user_id`. Used before deleting a user so the FK on
+        documents.uploaded_by_admin (which has no ON DELETE clause) does
+        not block the user-delete operation. Returns the number of rows
+        that were reassigned.
+        """
+        result = await self.session.execute(
+            update(Document)
+            .where(Document.uploaded_by_admin == from_user_id)
+            .values(uploaded_by_admin=to_user_id)
+        )
+        await self.session.flush()
+        return result.rowcount or 0
 
     async def mark_indexed(self, document_id: int) -> None:
         doc = await self.get_by_id_or_raise(document_id)
@@ -90,18 +137,6 @@ class DocumentChunkRepository(BaseRepository[DocumentChunk]):
         document_id: int,
         contents_and_embeddings: list[tuple[str, list[float] | None]],
     ) -> int:
-        """
-        Insert many chunks in a single DB round-trip.
-
-        The per-row create_chunk path does session.add + flush + refresh on
-        EVERY chunk. For a 500-chunk document that's 1500 round-trips. This
-        method does one session.add_all + one flush — typically 50-100× faster.
-
-        We do not refresh() the returned objects (they aren't returned at all)
-        because callers only need the count.
-
-        Returns: number of chunks inserted.
-        """
         if not contents_and_embeddings:
             return 0
         chunk_objs = [
@@ -117,25 +152,38 @@ class DocumentChunkRepository(BaseRepository[DocumentChunk]):
         await self.session.flush()
         return len(chunk_objs)
 
-    async def get_top_chunks_for_role(
+    async def get_top_chunks_for_roles(
         self,
         query_embedding: list[float],
-        user_role: str,
+        role_ids: list[int],
         top_k: int,
     ) -> list[tuple[float, DocumentChunk]]:
         """
-        Role-filtered pgvector retrieval.
-        Only returns chunks from documents the user's role can access.
+        Role-filtered pgvector retrieval. Returns only chunks belonging
+        to documents tagged with at least one of `role_ids`.
+
+        Implemented as a semi-join (IN subquery) rather than a JOIN to
+        avoid row multiplication when a document is tagged with several
+        of the user's roles AND/OR the user holds several roles that
+        match the same document. A plain JOIN would multiply the chunk
+        rows by the number of (document_role × user_role) matches; a
+        DISTINCT on top of it conflicts with Postgres's rule that
+        ORDER BY expressions must be in the SELECT list. The subquery
+        keeps each chunk row unique and the ordering valid.
         """
+        if not role_ids:
+            return []
+        allowed_doc_ids = (
+            select(DocumentRole.document_id)
+            .where(DocumentRole.role_id.in_(role_ids))
+        )
         result = await self.session.execute(
             select(
                 DocumentChunk,
                 DocumentChunk.embedding.cosine_distance(query_embedding).label("distance"),
             )
-            .join(Document, Document.id == DocumentChunk.document_id)
-            .join(DocumentRole, DocumentRole.document_id == Document.id)
             .where(
-                DocumentRole.role == user_role,
+                DocumentChunk.document_id.in_(allowed_doc_ids),
                 DocumentChunk.embedding.isnot(None),
             )
             .order_by(DocumentChunk.embedding.cosine_distance(query_embedding))
@@ -144,14 +192,12 @@ class DocumentChunkRepository(BaseRepository[DocumentChunk]):
         rows = result.all()
         return [(float(row.distance), row.DocumentChunk) for row in rows]
 
-    async def get_top_chunks_admin(
+    async def get_top_chunks_superuser(
         self,
         query_embedding: list[float],
         top_k: int,
     ) -> list[tuple[float, DocumentChunk]]:
-        """
-        Admin-only retrieval — no role filter, sees all indexed chunks.
-        """
+        """Superuser retrieval — no role filter, sees all indexed chunks."""
         result = await self.session.execute(
             select(
                 DocumentChunk,
@@ -164,13 +210,8 @@ class DocumentChunkRepository(BaseRepository[DocumentChunk]):
         rows = result.all()
         return [(float(row.distance), row.DocumentChunk) for row in rows]
 
-    def get_embedding(self, chunk: DocumentChunk) -> list[float] | None:
-        if chunk.embedding is None:
-            return None
-        return chunk.embedding
-
     async def delete_by_document(self, document_id: int) -> None:
-        chunks = await self.get_by_document(document_id)
-        for chunk in chunks:
-            await self.session.delete(chunk)
+        await self.session.execute(
+            delete(DocumentChunk).where(DocumentChunk.document_id == document_id)
+        )
         await self.session.flush()

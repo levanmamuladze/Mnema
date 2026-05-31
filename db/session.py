@@ -8,11 +8,8 @@ from sqlalchemy.ext.asyncio import (
 
 from core.config import settings
 
-# No register_vector here — pgvector.sqlalchemy.Vector handles encoding/decoding
-# via SQLAlchemy's text protocol. Registering the asyncpg codec on top of that
-# causes a conflict: Vector.process_bind_param returns a string '[-0.04,...]',
-# then asyncpg's codec tries to binary-encode that string and fails.
-# The asyncpg codec is only needed for direct asyncpg usage (docker_entrypoint.py).
+# No register_vector: pgvector.sqlalchemy.Vector handles encoding via the text
+# protocol; adding the asyncpg codec on top of that conflicts.
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,

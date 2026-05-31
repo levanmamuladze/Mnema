@@ -32,10 +32,10 @@ class Embedder:
 
     async def embed_single_async(self, text: str) -> list[float]:
         """Non-blocking version — runs sync model in thread pool executor."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.embed_single, text)
 
     async def embed_batch_async(self, texts: list[str]) -> list[list[float]]:
         """Non-blocking batch version."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.embed_batch, texts)

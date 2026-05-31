@@ -7,8 +7,9 @@ from docx import Document as DocxDocument
 _CODE_EXTENSIONS = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs", ".rb", ".php",
     ".cs", ".cpp", ".c", ".h", ".hpp", ".kt", ".swift", ".scala", ".sql",
-    ".sh", ".bash", ".zsh", ".yaml", ".yml", ".json", ".toml", ".ini", ".cfg",
-    ".md", ".txt", ".html", ".css", ".xml", ".dockerfile",
+    ".sh", ".bash", ".zsh", ".yaml", ".yml", ".json", ".jsonl", ".ndjson",
+    ".toml", ".ini", ".cfg", ".md", ".txt", ".csv", ".tsv", ".html", ".css",
+    ".xml", ".dockerfile", ".log", ".rst", ".tex", ".env",
 }
 
 

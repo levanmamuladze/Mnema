@@ -5,7 +5,6 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean,
     DateTime,
-    Float,
     ForeignKey,
     Integer,
     String,
@@ -24,7 +23,79 @@ class Base(DeclarativeBase):
     pass
 
 
-VALID_ROLES = {"hr", "developer"}
+class Role(Base):
+    """
+    A team / department / access tier. Replaces the old hardcoded
+    {hr, developer} string column.
+
+    `persona_name`, `domain_label`, `scope_description`, and
+    `general_knowledge_scope` are the four labeled slots that role-admins
+    fill in via the UI. The prompt builder substitutes them into the
+    system-controlled template — role-admins can't rewrite the safety
+    scaffold, only customise the persona.
+    """
+    __tablename__ = "roles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    persona_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    domain_label: Mapped[str] = mapped_column(String(50), nullable=False)
+    scope_description: Mapped[str] = mapped_column(Text, nullable=False)
+    general_knowledge_scope: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+    memberships: Mapped[list["UserRole"]] = relationship(
+        back_populates="role", cascade="all, delete-orphan"
+    )
+    document_assignments: Mapped[list["DocumentRole"]] = relationship(
+        back_populates="role", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        return f"<Role id={self.id} name={self.name!r}>"
+
+
+class UserRole(Base):
+    """
+    Many-to-many user ↔ role association.
+
+    `is_role_admin` flags whether this membership grants admin-level
+    privileges within that role — i.e. the right to add/remove members
+    of this role, upload/edit/delete documents tagged with this role,
+    and edit this role's persona. It is scoped to one role only; a
+    user can be a role-admin of HR and a regular member of Engineering.
+    Superusers (`User.is_superuser=True`) bypass these flags everywhere.
+
+    The conversation-privacy invariant: nothing about `is_role_admin`
+    grants visibility into other users' conversations or messages. That
+    is enforced at the query layer (ownership joins on user_id), not by
+    role membership.
+    """
+    __tablename__ = "user_roles"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    role_id: Mapped[int] = mapped_column(
+        ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True
+    )
+    is_role_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    user: Mapped["User"] = relationship(back_populates="role_memberships")
+    role: Mapped["Role"] = relationship(back_populates="memberships")
+
+    def __repr__(self) -> str:
+        return (
+            f"<UserRole user_id={self.user_id} role_id={self.role_id} "
+            f"admin={self.is_role_admin}>"
+        )
 
 
 class User(Base):
@@ -34,17 +105,46 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[str] = mapped_column(String(50), default="developer", nullable=False)
-    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Global superuser: bypasses every RBAC check. Role-scoped admin lives
+    # on UserRole.is_role_admin.
+    is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    conversations: Mapped[list["Conversation"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    learning_insights: Mapped[list["LearningInsight"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    learning_progress: Mapped[list["LearningProgress"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    role_memberships: Mapped[list["UserRole"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    conversations: Mapped[list["Conversation"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+    # ── Convenience accessors (computed, never persisted) ─────────────
+    @property
+    def role_ids(self) -> list[int]:
+        """IDs of every role this user is a member of."""
+        return [m.role_id for m in self.role_memberships]
+
+    @property
+    def admin_role_ids(self) -> list[int]:
+        """IDs of roles this user is a *role-admin* of."""
+        return [m.role_id for m in self.role_memberships if m.is_role_admin]
+
+    def is_member_of(self, role_id: int) -> bool:
+        return any(m.role_id == role_id for m in self.role_memberships)
+
+    def is_admin_of(self, role_id: int) -> bool:
+        """True iff this user is an admin of `role_id`, or a superuser."""
+        if self.is_superuser:
+            return True
+        return any(
+            m.role_id == role_id and m.is_role_admin for m in self.role_memberships
+        )
 
     def __repr__(self) -> str:
-        return f"<User id={self.id} username={self.username!r} role={self.role!r}>"
+        return (
+            f"<User id={self.id} username={self.username!r} "
+            f"superuser={self.is_superuser}>"
+        )
 
 
 class Document(Base):
@@ -60,25 +160,42 @@ class Document(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     is_indexed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
-    chunks: Mapped[list["DocumentChunk"]] = relationship(back_populates="document", cascade="all, delete-orphan")
-    allowed_roles: Mapped[list["DocumentRole"]] = relationship(back_populates="document", cascade="all, delete-orphan")
+    chunks: Mapped[list["DocumentChunk"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
+    role_assignments: Mapped[list["DocumentRole"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Document id={self.id} filename={self.filename!r}>"
 
 
 class DocumentRole(Base):
+    """
+    Which roles are permitted to retrieve a given document.
+
+    Replaces the old varchar role column with a real FK so renaming a
+    role doesn't desync the access table from `roles`.
+    """
     __tablename__ = "document_roles"
-    __table_args__ = (UniqueConstraint("document_id", "role", name="uq_document_role"),)
+    __table_args__ = (
+        UniqueConstraint("document_id", "role_id", name="uq_document_role_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
-    role: Mapped[str] = mapped_column(String(50), nullable=False)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role_id: Mapped[int] = mapped_column(
+        ForeignKey("roles.id", ondelete="CASCADE"), nullable=False
+    )
 
-    document: Mapped["Document"] = relationship(back_populates="allowed_roles")
+    document: Mapped["Document"] = relationship(back_populates="role_assignments")
+    role: Mapped["Role"] = relationship(back_populates="document_assignments")
 
     def __repr__(self) -> str:
-        return f"<DocumentRole doc_id={self.document_id} role={self.role!r}>"
+        return f"<DocumentRole doc_id={self.document_id} role_id={self.role_id}>"
 
 
 class DocumentChunk(Base):
@@ -126,44 +243,31 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
-    learning_insights: Mapped[list["LearningInsight"]] = relationship(back_populates="source_message")
 
     def __repr__(self) -> str:
         return f"<Message id={self.id} role={self.role!r}>"
 
 
-class LearningInsight(Base):
-    __tablename__ = "learning_insights"
+class RevokedToken(Base):
+    """
+    Denylist of consumed / revoked refresh-token jti values.
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    topic: Mapped[str] = mapped_column(String(500), nullable=False)
-    summary: Mapped[str] = mapped_column(Text, nullable=False)
-    source_message_id: Mapped[Optional[int]] = mapped_column(ForeignKey("messages.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    A jti lands here when (a) the user logs out, or (b) a refresh token is
+    rotated (its old jti is consumed). Presenting a jti that's already here
+    means either a logged-out token or a replayed old token — both are
+    rejected. `expires_at` lets a periodic job purge entries once the
+    underlying token would have expired anyway.
+    """
+    __tablename__ = "revoked_tokens"
 
-    user: Mapped["User"] = relationship(back_populates="learning_insights")
-    source_message: Mapped[Optional["Message"]] = relationship(back_populates="learning_insights")
+    jti: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
     def __repr__(self) -> str:
-        return f"<LearningInsight id={self.id} topic={self.topic!r}>"
-
-
-class LearningProgress(Base):
-    """
-    Tracks per-user, per-topic learning progress (0–100).
-    One row per (user_id, topic) — upserted on each conversation turn.
-    """
-    __tablename__ = "learning_progress"
-    __table_args__ = (UniqueConstraint("user_id", "topic", name="uq_user_topic"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    topic: Mapped[str] = mapped_column(String(500), nullable=False)
-    progress: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-    user: Mapped["User"] = relationship(back_populates="learning_progress")
-
-    def __repr__(self) -> str:
-        return f"<LearningProgress user={self.user_id} topic={self.topic!r} progress={self.progress}>"
+        return f"<RevokedToken jti={self.jti[:8]}… user={self.user_id}>"

@@ -29,21 +29,41 @@ class TextChunker:
             return self._hard_split(text)
 
         parts = text.split(separator)
+        sep_len = len(separator)
         result: list[str] = []
         current_parts: list[str] = []
         current_len = 0
 
+        def flush() -> None:
+            nonlocal current_parts, current_len
+            if current_parts:
+                result.append(separator.join(current_parts))
+                current_parts = []
+                current_len = 0
+
         for part in parts:
             part_len = len(part)
-            sep_len = len(separator)
 
-            would_exceed = current_len + part_len + (sep_len if current_parts else 0) > self.chunk_size
+            # A single part that can't fit in a chunk on its own must be broken
+            # down further with the finer separators — otherwise it would emit
+            # one oversized chunk. This recursive descent is what the chunker
+            # was previously missing: it only ever split on separators[0], so a
+            # long single paragraph (no "\n\n") came out as one giant chunk.
+            if part_len > self.chunk_size:
+                flush()
+                result.extend(self._split(part, remaining))
+                continue
+
+            would_exceed = (
+                current_len + part_len + (sep_len if current_parts else 0)
+                > self.chunk_size
+            )
 
             if would_exceed and current_parts:
-                chunk_text = separator.join(current_parts)
-                result.append(chunk_text)
+                result.append(separator.join(current_parts))
 
-                # Build overlap from tail of current_parts
+                # Build overlap from tail of current_parts so adjacent chunks
+                # share context (the property RAG retrieval depends on).
                 overlap_parts: list[str] = []
                 overlap_len = 0
                 for p in reversed(current_parts):
@@ -58,9 +78,7 @@ class TextChunker:
             current_parts.append(part)
             current_len += part_len + (sep_len if len(current_parts) > 1 else 0)
 
-        if current_parts:
-            result.append(separator.join(current_parts))
-
+        flush()
         return result
 
     def _hard_split(self, text: str) -> list[str]:
