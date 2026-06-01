@@ -292,20 +292,37 @@ Interactive docs (`/api/docs`, `/api/redoc`) are served **only when `DEBUG=true`
 
 ---
 
+## Deployment, security & commercial docs
+
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** — per-scenario client install guide
+  (on-prem GPU, CPU, client cloud, Apple Silicon), sizing, HTTPS networking,
+  backups, and a printable checklist.
+- **[docs/security-whitepaper.md](docs/security-whitepaper.md)** — security
+  architecture for buyer review (query-layer RBAC, data residency, controls).
+- **[legal/](legal/)** — EULA, DPA, and privacy-policy templates (drafts; have
+  counsel review).
+- **[docs/roadmap-sso-and-connectors.md](docs/roadmap-sso-and-connectors.md)** —
+  implementation designs for SSO/OIDC and document connectors.
+- **Demo in one command:** `./scripts/demo.sh` (or `scripts/demo.ps1`) brings up
+  the stack and loads the bundled GitHub demo dataset.
+
 ## Roadmap
 
-- Automated RBAC isolation and API integration test suite; CI pipeline.
-- Horizontal scalability: shared (Redis) rate-limit store, multiple workers, and
-  an LLM request queue with backpressure.
-- Background cleanup jobs (expired tokens).
-- Observability: metrics endpoint and error tracking.
+- **Done:** RBAC isolation integration test + CI pipeline; configurable
+  (Redis) rate-limit store; bounded LLM generation concurrency; `/metrics`
+  endpoint + optional Sentry; expired-token cleanup job; HTTPS reverse-proxy
+  overlay; loopback-bound internal services.
+- **Next:** OIDC SSO, then a Google Drive connector (see the design doc above).
+- Multiple app workers behind the shared rate-limit store, load-tested.
 - Optional managed/cloud LLM backend selectable per deployment.
 
 ---
 
 ## License
 
-Proprietary — all rights reserved (update to your chosen license).
+Proprietary — all rights reserved. Commercial use is governed by the End-User
+License Agreement; see **[legal/eula.md](legal/eula.md)** (draft — finalize with
+counsel before distribution).
 
 ## Contact
 

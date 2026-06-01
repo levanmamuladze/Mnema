@@ -1,0 +1,43 @@
+# Production overlay — adds an HTTPS reverse proxy (Caddy) in front of the app.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# What this gives you over the base file:
+#   - Caddy terminates TLS on 80/443 and proxies to the app over the internal
+#     Compose network (app:8000). Caddy fetches/renews certificates
+#     automatically for a public domain (Let's Encrypt).
+#   - The app itself is only published on 127.0.0.1 (see base file), so the
+#     only thing reachable from the network is Caddy on 80/443.
+#   - Postgres (5432) and Ollama (11434) stay loopback-only (base file) — never
+#     exposed off-host.
+#
+# Before running, set your domain in ./Caddyfile and, in .env:
+#   COOKIE_SECURE=true
+#   ALLOWED_ORIGINS=https://mnema.yourclient.com
+#
+# For an on-prem deployment with an internal-only hostname (no public DNS),
+# replace the Caddyfile site block with one using Caddy's internal CA or your
+# own certs — see the comments in ./Caddyfile.
+
+services:
+  caddy:
+    image: caddy:2
+    container_name: mnema_caddy
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - mnema_net
+
+volumes:
+  caddy_data:
+  caddy_config:

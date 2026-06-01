@@ -1,0 +1,36 @@
+# Caddy reverse proxy for Mnema.
+#
+# ── PUBLIC DOMAIN (cloud, Scenario C) ────────────────────────────────────────
+# Replace the placeholder with the client's real domain. Caddy will obtain and
+# renew a Let's Encrypt certificate automatically (ports 80 + 443 must be open
+# to the internet; everything else stays loopback-only per the base compose).
+
+mnema.yourclient.com {
+    encode gzip
+
+    # SSE: disable proxy buffering so streamed chat tokens flush immediately.
+    reverse_proxy app:8000 {
+        flush_interval -1
+    }
+}
+
+# ── ON-PREM / INTERNAL HOSTNAME (Scenario A/B) ───────────────────────────────
+# No public DNS? Use an internal name with Caddy's built-in (self-signed) CA,
+# or your own corporate certificate. Comment out the block above and use one of
+# these instead:
+#
+# Internal CA (browsers will warn unless you distribute Caddy's root cert):
+#   mnema.clientcompany.internal {
+#       tls internal
+#       reverse_proxy app:8000 {
+#           flush_interval -1
+#       }
+#   }
+#
+# Your own certificate files (mounted into the caddy container):
+#   mnema.clientcompany.internal {
+#       tls /etc/caddy/cert.pem /etc/caddy/key.pem
+#       reverse_proxy app:8000 {
+#           flush_interval -1
+#       }
+#   }
