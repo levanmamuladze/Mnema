@@ -4,6 +4,8 @@ import logging
 from collections.abc import AsyncGenerator, Coroutine
 from typing import Any
 
+from core import metrics
+from core.concurrency import generation_slot
 from db.models import User
 from db.repositories.conversation_repository import ConversationRepository
 from db.session import AsyncSessionLocal
@@ -108,11 +110,15 @@ class ChatService:
                     "chat[conv=%s]: retrieved %d chunks, streaming from LLM",
                     conversation_id, len(chunks),
                 )
-                async for token in rag._stream_from_chunks(
-                    user_message, chunks, history_dicts, role=persona_slots
-                ):
-                    full_response += token
-                    yield f"data: {json.dumps({'token': token})}\n\n"
+                metrics.inc("mnema_chat_streams_total")
+                # Bound concurrent generations so simultaneous chats queue for a
+                # GPU slot instead of degrading every in-flight answer.
+                async with generation_slot():
+                    async for token in rag._stream_from_chunks(
+                        user_message, chunks, history_dicts, role=persona_slots
+                    ):
+                        full_response += token
+                        yield f"data: {json.dumps({'token': token})}\n\n"
 
                 logger.info(
                     "chat[conv=%s]: stream complete (%d chars)",
@@ -124,6 +130,7 @@ class ChatService:
                     "Error during retrieval/streaming for conversation %s",
                     conversation_id,
                 )
+                metrics.inc("mnema_chat_errors_total")
                 error_msg = "Sorry, I encountered an error processing your request."
                 yield f"data: {json.dumps({'error': error_msg})}\n\n"
                 full_response = error_msg

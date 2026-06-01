@@ -1,12 +1,13 @@
 import asyncio
 import logging
 import os
+import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from slowapi import _rate_limit_exceeded_handler
@@ -16,11 +17,35 @@ from sqlalchemy import text
 
 from api.routers import admin, auth, chat
 from app import __version__
+from core import metrics
 from core.config import settings
 from core.exceptions import AppException
 from core.limiter import limiter
 from core.logging import RequestIDMiddleware, setup_logging
 from db.session import AsyncSessionLocal, init_db
+
+
+def _init_sentry() -> None:
+    """Initialise Sentry error tracking if a DSN is configured.
+
+    No-op when SENTRY_DSN is empty or the SDK isn't installed, so it never
+    affects the default lightweight deployment.
+    """
+    if not settings.SENTRY_DSN:
+        return
+    try:
+        import sentry_sdk
+    except ImportError:
+        logging.getLogger(__name__).warning(
+            "SENTRY_DSN is set but sentry-sdk is not installed; "
+            "run `pip install sentry-sdk` to enable error tracking."
+        )
+        return
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        traces_sample_rate=0.0,  # errors only by default; raise for tracing
+        send_default_pii=False,
+    )
 
 # Uvicorn only attaches handlers to its own loggers; configure the root logger
 # at import time so our module-level logger.info(...) calls are observable.
@@ -69,6 +94,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 def create_app() -> FastAPI:
+    _init_sentry()
     app = FastAPI(
         title=settings.APP_NAME,
         debug=settings.DEBUG,
@@ -82,6 +108,20 @@ def create_app() -> FastAPI:
     # Added first so it's the outermost middleware (Starlette runs them in
     # reverse registration order), so every log line carries the request id.
     app.add_middleware(RequestIDMiddleware)
+
+    if settings.METRICS_ENABLED:
+        @app.middleware("http")
+        async def metrics_middleware(request: Request, call_next):
+            start = time.perf_counter()
+            response = await call_next(request)
+            # Skip the scrape endpoint itself to avoid self-referential noise.
+            if request.url.path != "/metrics":
+                metrics.record_request(
+                    request.method,
+                    response.status_code,
+                    time.perf_counter() - start,
+                )
+            return response
 
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -150,6 +190,22 @@ def create_app() -> FastAPI:
     @app.get("/admin-ui")
     async def serve_admin(request: Request):
         return templates.TemplateResponse("admin.html", {"request": request})
+
+    if settings.METRICS_ENABLED:
+        @app.get("/metrics")
+        async def get_metrics(request: Request) -> Response:
+            # Optional bearer-token guard. When METRICS_TOKEN is unset the
+            # endpoint is open — only do that when /metrics is not exposed to
+            # untrusted networks (it is never proxied by the shipped Caddyfile).
+            if settings.METRICS_TOKEN:
+                auth = request.headers.get("Authorization", "")
+                expected = f"Bearer {settings.METRICS_TOKEN}"
+                if auth != expected:
+                    return PlainTextResponse("Unauthorized", status_code=401)
+            return PlainTextResponse(
+                metrics.render(),
+                media_type="text/plain; version=0.0.4; charset=utf-8",
+            )
 
     @app.get("/health")
     async def health() -> JSONResponse:

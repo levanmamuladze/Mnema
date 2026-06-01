@@ -10,10 +10,16 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: app
-      POSTGRES_PASSWORD: postgres
+      # Sourced from .env. Falls back to "postgres" only for throwaway local
+      # dev; scripts/create_env.py generates a strong random value for real
+      # installs. Keep this in sync with the app's DATABASE_URL below.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: app
+    # Bound to loopback so Postgres is reachable from the host (psql, backups)
+    # but NEVER from the LAN/internet. The app reaches it over the internal
+    # Compose network by service name, which does not need a published port.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -49,7 +55,7 @@ services:
       PGADMIN_CONFIG_PASSWORD_LENGTH_MIN: 1
       PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
     ports:
-      - "5050:80"
+      - "127.0.0.1:5050:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
       - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
@@ -60,8 +66,10 @@ services:
     image: ollama/ollama:latest
     container_name: mnema_ollama
     restart: unless-stopped
+    # Loopback-only: the LLM API must never be exposed off-host. The app
+    # reaches it via the internal network as http://ollama:11434.
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     environment:
@@ -115,8 +123,12 @@ services:
     build: .
     container_name: mnema_app
     restart: unless-stopped
+    # Loopback by default. For local dev you reach the app at
+    # http://localhost:8000. In production, do NOT expose this directly —
+    # put the Caddy overlay (docker-compose.prod.yml) in front to terminate
+    # HTTPS and reach the app over the internal network. See DEPLOYMENT.md.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       db:
         condition: service_healthy
@@ -130,7 +142,7 @@ services:
       # Force the in-container hostnames even if .env has localhost values
       # (this prevents "ConnectError: connect to localhost:11434" inside the container).
       OLLAMA_BASE_URL: http://ollama:11434
-      DATABASE_URL: postgresql+asyncpg://app:postgres@db:5432/app
+      DATABASE_URL: postgresql+asyncpg://app:${POSTGRES_PASSWORD:-postgres}@db:5432/app
     volumes:
       - uploads_data:/app/uploads
       # Named volume by default — models persist across rebuilds without

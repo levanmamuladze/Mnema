@@ -44,7 +44,11 @@ class Settings(BaseSettings):
 
     # Ollama
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "qwen2.5:7b"
+    # Must match the model the Compose `ollama-init` puller fetches
+    # (docker-compose.yml OLLAMA_MODEL default). If the app default and the
+    # puller default disagree, /api/chat 404s on a fresh stack because the
+    # app asks for a model that was never pulled.
+    OLLAMA_MODEL: str = "qwen2.5:14b"
 
     # Embeddings / Reranking
     EMBED_MODEL: str = "BAAI/bge-base-en-v1.5"
@@ -61,6 +65,27 @@ class Settings(BaseSettings):
     # File upload
     UPLOAD_DIR: str = "uploads"
     MAX_UPLOAD_SIZE_MB: int = 50
+
+    # Rate limiting — slowapi storage backend. "memory://" is per-process and
+    # does NOT share counts across workers; point it at Redis
+    # ("redis://redis:6379/0") once you run more than one worker.
+    RATE_LIMIT_STORAGE_URI: str = "memory://"
+
+    # LLM backpressure — max number of generations streaming from Ollama at
+    # once. Requests beyond this queue (await a slot) instead of piling onto a
+    # single GPU and degrading every response. Size to your hardware: ~2–4 for
+    # one consumer GPU.
+    MAX_CONCURRENT_GENERATIONS: int = 4
+
+    # Observability
+    METRICS_ENABLED: bool = True
+    # If set, GET /metrics requires `Authorization: Bearer <token>`. Leave empty
+    # only when /metrics is unreachable from outside (e.g. scraped over the
+    # internal network and never proxied by Caddy).
+    METRICS_TOKEN: str = ""
+    # Optional Sentry error tracking. Empty = disabled (no-op). Set a DSN and
+    # `pip install sentry-sdk` to enable.
+    SENTRY_DSN: str = ""
 
     @field_validator("SECRET_KEY")
     @classmethod
